@@ -5,7 +5,7 @@
 </p>
 
 # @stricahq/cbors
-CBOR ([RFC 7049](http://tools.ietf.org/html/rfc7049)) encoder and decoder for javascript data types with streaming. cbors implements annotations for deriving sub-cbor buffer from original cbor buffer. This is a requirement for working with Cardano data types.
+CBOR ([RFC 7049](http://tools.ietf.org/html/rfc7049)) encoder and decoder for javascript data types with streaming support. cbors implements annotations for deriving sub-cbor buffer from original cbor buffer which is a requirement for working with Cardano data types.
 
 ## Installation
 
