@@ -167,6 +167,18 @@ export default (
         } else if (value instanceof Buffer) {
           pushTypeAndLength(2, value.length);
           pushBuffer(value);
+        } else if (value instanceof ArrayBuffer) {
+          const buf = Buffer.from(value);
+          pushTypeAndLength(2, buf.length);
+          pushBuffer(buf);
+        } else if (value instanceof Uint8ClampedArray) {
+          const buf = Buffer.from(value);
+          pushTypeAndLength(2, buf.length);
+          pushBuffer(buf);
+        } else if (value instanceof Uint8Array) {
+          const buf = Buffer.from(value);
+          pushTypeAndLength(2, buf.length);
+          pushBuffer(buf);
         } else if (BigNumber.isBigNumber(value)) {
           pushBigNumber(value);
         } else if (value instanceof CborTag) {
