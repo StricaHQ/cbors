@@ -19,8 +19,8 @@
   "scripts": {
     "docs": "rm -rf docs && typedoc",
     "build": "rm -rf dist && tsc && webpack",
-    "lint": "node_modules/.bin/eslint src/**/*.ts",
-    "lint:fix": "node_modules/.bin/eslint --fix .",
+    "lint": "eslint 'src/**/*.ts'",
+    "lint:fix": "eslint --fix 'src/**/*.ts'",
     "test": "ts-mocha tests/**/*.spec.ts"
   },
   "author": "Strica",

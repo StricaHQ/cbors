@@ -178,4 +178,28 @@ describe('cbors', (): void => {
       }
     });
   }
+
+  it('Indefinite Array byteSpan', () => {
+    const indAryItems = Buffer.from('9fa10001a10101a10200ff', 'hex');
+    const decoded = Decoder.decode(indAryItems).value;
+    const firstByteSpan = decoded[0].getByteSpan();
+    expect(firstByteSpan[0]).to.eq(1);
+    expect(firstByteSpan[1]).to.eq(4);
+
+    const secondByteSpan = decoded[1].getByteSpan();
+    expect(secondByteSpan[0]).to.eq(4);
+    expect(secondByteSpan[1]).to.eq(7);
+  });
+
+  it('Indefinite Map byteSpan', () => {
+    const indMapItems = Buffer.from('bf00a1000101a1010102a10200ff', 'hex');
+    const decoded = Decoder.decode(indMapItems).value;
+    const firstByteSpan = decoded.get(0).getByteSpan();
+    expect(firstByteSpan[0]).to.eq(2);
+    expect(firstByteSpan[1]).to.eq(5);
+
+    const secondByteSpan = decoded.get(1).getByteSpan();
+    expect(secondByteSpan[0]).to.eq(6);
+    expect(secondByteSpan[1]).to.eq(9);
+  });
 });

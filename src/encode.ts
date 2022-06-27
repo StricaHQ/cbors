@@ -1,8 +1,8 @@
 /* eslint-disable no-bitwise */
-import { Buffer } from "buffer";
-import BigNumber from "bignumber.js";
-import { CborTag } from ".";
-import { IndefiniteArray, IndefiniteMap } from "./helpers";
+import { Buffer } from 'buffer';
+import BigNumber from 'bignumber.js';
+import { CborTag } from '.';
+import { IndefiniteArray, IndefiniteMap } from './helpers';
 import {
   MAX_BIG_NUM_INT,
   MAX_BIG_NUM_INT32,
@@ -10,10 +10,10 @@ import {
   POW_2_32,
   POW_2_53,
   SHIFT32,
-} from "./utils";
+} from './utils';
 
-const NAN_BUF = Buffer.from("f97e00", "hex");
-const BREAK = Buffer.from("ff", "hex");
+const NAN_BUF = Buffer.from('f97e00', 'hex');
+const BREAK = Buffer.from('ff', 'hex');
 
 export default (
   input: any,
@@ -71,7 +71,7 @@ export default (
   }
   function pushIntNum(value: number) {
     if (Object.is(value, -0)) {
-      return pushBuffer(Buffer.from("f98000", "hex"));
+      return pushBuffer(Buffer.from('f98000', 'hex'));
     }
     if (value >= 0 && value <= POW_2_53) {
       return pushTypeAndLength(0, value);
@@ -107,7 +107,7 @@ export default (
       pushTypeAndLength(6, tag);
 
       // push buffer
-      const buf = Buffer.from(str, "hex");
+      const buf = Buffer.from(str, 'hex');
       pushTypeAndLength(2, buf.length);
       pushBuffer(buf);
     }
@@ -139,15 +139,15 @@ export default (
     if (value === undefined) return pushUInt8(0xf7);
 
     switch (typeof value) {
-      case "number": {
+      case 'number': {
         if (Math.round(value) === value) {
           return pushIntNum(value);
         }
         pushUInt8(0xfb);
         return pushFloat64(value);
       }
-      case "string": {
-        const strBuff = Buffer.from(value, "utf8");
+      case 'string': {
+        const strBuff = Buffer.from(value, 'utf8');
         pushTypeAndLength(3, strBuff.length);
         return pushBuffer(strBuff);
       }

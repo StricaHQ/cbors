@@ -1,15 +1,15 @@
 /* eslint-disable no-underscore-dangle */
 /* eslint-disable no-bitwise */
 
-import { Buffer } from "buffer";
-import * as stream from "stream";
-import BigNumber from "bignumber.js";
-import { addSpanBytesToObject, getBigNum, POW_2_24, utf8Decoder } from "./utils";
-import BufferList from "./BufferList";
-import SimpleValue from "./SimpleValue";
-import CborTag from "./CborTag";
-import CborArray from "./CborArray";
-import CborMap from "./CborMap";
+import { Buffer } from 'buffer';
+import * as stream from 'stream';
+import BigNumber from 'bignumber.js';
+import { addSpanBytesToObject, getBigNum, POW_2_24, utf8Decoder } from './utils';
+import BufferList from './BufferList';
+import SimpleValue from './SimpleValue';
+import CborTag from './CborTag';
+import CborArray from './CborArray';
+import CborMap from './CborMap';
 
 const readFloat16 = (value: number): number => {
   const sign = value & 0x8000;
@@ -62,13 +62,13 @@ class Decoder extends stream.Transform {
     while (!state.done) {
       const b = bs.read(state.value);
       if (b == null || b.length !== state.value) {
-        throw new Error("Insufficient data");
+        throw new Error('Insufficient data');
       }
       state = parser.next(b);
     }
 
     if (bs.length > 0) {
-      throw new Error("Remaining Bytes");
+      throw new Error('Remaining Bytes');
     }
     return {
       bytes: inputBytes,
@@ -112,7 +112,7 @@ class Decoder extends stream.Transform {
       length = lengthStatus.value;
       //
       if (length < 0 || number >> 5 !== majorType) {
-        throw new Error("Invalid indefinite length encoding");
+        throw new Error('Invalid indefinite length encoding');
       }
     }
     return length;
@@ -148,7 +148,7 @@ class Decoder extends stream.Transform {
     if (additionalInformation === 31) {
       return -1;
     }
-    throw new Error("Invalid length encoding");
+    throw new Error('Invalid length encoding');
   }
 
   _transform(fresh: any, encoding: any, cb: any) {
@@ -189,10 +189,11 @@ class Decoder extends stream.Transform {
   }
 
   private *parse(suppliedBytes?: Buffer): Generator<number, any, Buffer> {
-    const startByte = this.offset;
+    let startByte = this.offset;
     let bytes;
     if (suppliedBytes) {
       bytes = suppliedBytes;
+      startByte -= suppliedBytes.length;
     } else {
       bytes = yield 1;
       this.updateTracker(bytes);
@@ -232,7 +233,7 @@ class Decoder extends stream.Transform {
     length = lengthStatus.value;
     //
 
-    if (length < 0 && (majorType < 2 || majorType > 6)) throw new Error("Invalid length");
+    if (length < 0 && (majorType < 2 || majorType > 6)) throw new Error('Invalid length');
 
     switch (majorType) {
       case 0:
@@ -405,7 +406,7 @@ class Decoder extends stream.Transform {
         }
       }
       default: {
-        throw new Error("Invalid CBOR encoding");
+        throw new Error('Invalid CBOR encoding');
       }
     }
   }
@@ -419,7 +420,7 @@ class Decoder extends stream.Transform {
   }
 
   _flush(cb: any) {
-    cb(this.fresh ? null : new Error("unexpected end of input"));
+    cb(this.fresh ? null : new Error('unexpected end of input'));
   }
 }
 

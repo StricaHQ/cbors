@@ -1,4 +1,4 @@
-import { Buffer } from "buffer";
+import { Buffer } from 'buffer';
 
 export default class BufferList {
   private buf: Buffer = Buffer.alloc(0);
@@ -12,14 +12,14 @@ export default class BufferList {
       return Buffer.alloc(0);
     }
     if (n < 0) {
-      throw new Error("invalid length");
+      throw new Error('invalid length');
     }
 
     const chunk = this.buf.slice(0, n);
     this.buf = this.buf.slice(n);
 
     if (chunk.length < n) {
-      throw new Error("Not enough buffer");
+      throw new Error('Not enough buffer');
     }
 
     return chunk;
