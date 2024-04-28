@@ -106,7 +106,6 @@ class Decoder extends stream.Transform {
       let lengthStatus = lengthReader.next();
       while (!lengthStatus.done) {
         bytes = yield lengthStatus.value;
-        this.updateTracker(bytes);
         lengthStatus = lengthReader.next(bytes);
       }
       length = lengthStatus.value;

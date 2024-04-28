@@ -191,6 +191,18 @@ describe('cbors', (): void => {
     expect(secondByteSpan[1]).to.eq(7);
   });
 
+  it('Indefinite Buffer byteSpan', () => {
+    // indef buffer containing 2 def buffers
+    const indBuf = Buffer.from(
+      '5f5840697066733a2f2f626166796265696571616c727875627969737734326c696472327a746b68677767686563783571746b7173726f32793769696b6e6935797168426365ff',
+      'hex'
+    );
+    const decoded = Decoder.decode(indBuf).value;
+    const byteSpan = decoded.getByteSpan();
+    expect(byteSpan[0]).to.eq(0);
+    expect(byteSpan[1]).to.eq(71);
+  });
+
   it('Indefinite Map byteSpan', () => {
     const indMapItems = Buffer.from('bf00a1000101a1010102a10200ff', 'hex');
     const decoded = Decoder.decode(indMapItems).value;
