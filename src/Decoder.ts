@@ -30,7 +30,7 @@ const readFloat16 = (value: number): number => {
   else if (fraction !== 0) return (sign ? -1 : 1) * fraction * POW_2_24;
 
   const buf = Buffer.alloc(4);
-  buf.writeUInt32BE((sign << 16) | (exponent << 13) | (fraction << 13));
+  buf.writeUInt32BE(((sign << 16) | (exponent << 13) | (fraction << 13)) >>> 0);
   return buf.readFloatBE(0);
 };
 
@@ -189,7 +189,7 @@ class Decoder extends stream.Transform {
         });
         this.restart();
       } else {
-        this.needed = ret.value || Infinity;
+        this.needed = ret.value ?? Infinity;
       }
     }
 
@@ -241,7 +241,7 @@ class Decoder extends stream.Transform {
     length = lengthStatus.value;
     //
 
-    if (length < 0 && (majorType < 2 || majorType > 6)) throw new Error('Invalid length');
+    if (length < 0 && (majorType < 2 || majorType > 5)) throw new Error('Invalid length');
 
     switch (majorType) {
       case 0:

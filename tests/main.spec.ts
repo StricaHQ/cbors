@@ -1,7 +1,14 @@
 import { expect } from 'chai';
 import * as _ from 'lodash';
 import { BigNumber } from 'bignumber.js';
-import { CborTag, Decoder, Encoder, IndefiniteArray, IndefiniteMap } from '../src/index';
+import {
+  CborTag,
+  Decoder,
+  Encoder,
+  IndefiniteArray,
+  IndefiniteMap,
+  SimpleValue,
+} from '../src/index';
 
 const deepEql = _.isEqual;
 
@@ -216,5 +223,68 @@ describe('cbors', (): void => {
     const secondByteSpan = decoded.get(1).getByteSpan();
     expect(secondByteSpan[0]).to.eq(6);
     expect(secondByteSpan[1]).to.eq(9);
+  });
+
+  it('Decode negative and special float16', () => {
+    expect(Decoder.decode(Buffer.from('f9c400', 'hex')).value).eq(-4);
+    expect(Object.is(Decoder.decode(Buffer.from('f98000', 'hex')).value, -0)).eq(true);
+    expect(Decoder.decode(Buffer.from('f98001', 'hex')).value).eq(-5.960464477539063e-8);
+    expect(Decoder.decode(Buffer.from('f97c00', 'hex')).value).eq(Infinity);
+    expect(Decoder.decode(Buffer.from('f9fc00', 'hex')).value).eq(-Infinity);
+    expect(Number.isNaN(Decoder.decode(Buffer.from('f97e00', 'hex')).value)).eq(true);
+    expect(Decoder.decode(Buffer.from('f93c00', 'hex')).value).eq(1);
+  });
+
+  it('Encode integers beyond ±2^53 exactly as integers', () => {
+    expect(Encoder.encode(2 ** 60).toString('hex')).eq('1b1000000000000000');
+    expect(Encoder.encode(-(2 ** 60)).toString('hex')).eq('3b0fffffffffffffff');
+    expect(Encoder.encode([2 ** 60, 1]).toString('hex')).eq('821b100000000000000001');
+
+    const encoded = Encoder.encode(45000000000000000);
+    expect(encoded[0]).eq(0x1b); // unsigned int major type, not a float
+    const roundTripped = Decoder.decode(encoded).value as BigNumber;
+    expect(roundTripped.toString()).eq('45000000000000000');
+
+    // beyond 2^64 falls back to bignum tags
+    expect(Encoder.encode(2 ** 70).toString('hex')).eq('c249400000000000000000');
+    expect(Encoder.encode(-(2 ** 70)).toString('hex')).eq('c3493fffffffffffffffff');
+  });
+
+  it('Encode non-finite numbers', () => {
+    expect(Encoder.encode(Infinity).toString('hex')).eq('f97c00');
+    expect(Encoder.encode(-Infinity).toString('hex')).eq('f9fc00');
+    expect(Encoder.encode(NaN).toString('hex')).eq('f97e00');
+    expect(Encoder.encode(new BigNumber(Infinity)).toString('hex')).eq('f97c00');
+    expect(Encoder.encode(new BigNumber(-Infinity)).toString('hex')).eq('f9fc00');
+    expect(Object.is(Decoder.decode(Encoder.encode(-0)).value, -0)).eq(true);
+  });
+
+  it('SimpleValue round trip', () => {
+    const decoded = Decoder.decode(Buffer.from('f0', 'hex')).value;
+    expect(decoded instanceof SimpleValue).eq(true);
+    expect(decoded.value).eq(16);
+    expect(Encoder.encode(decoded).toString('hex')).eq('f0');
+    expect(Encoder.encode(new SimpleValue(255)).toString('hex')).eq('f8ff');
+    expect(() => Encoder.encode(new SimpleValue(24))).to.throw('Invalid simple value');
+    expect(() => Encoder.encode(new SimpleValue(300))).to.throw('Invalid simple value');
+  });
+
+  it('Stream decode zero-length bytes and string', (done) => {
+    const decoder = new Decoder();
+    const results: any[] = [];
+    decoder.on('data', (data: any) => results.push(data.value));
+    decoder.on('error', done);
+    decoder.on('end', () => {
+      expect(results.length).eq(3);
+      expect(Buffer.isBuffer(results[0])).eq(true);
+      expect(results[0].length).eq(0);
+      expect(results[1]).eq('');
+      expect(results[2]).eq(1);
+      done();
+    });
+    decoder.write(Buffer.from('40', 'hex')); // empty byte string
+    decoder.write(Buffer.from('60', 'hex')); // empty text string
+    decoder.write(Buffer.from('01', 'hex')); // unsigned 1
+    decoder.end();
   });
 });

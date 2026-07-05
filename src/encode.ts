@@ -3,6 +3,7 @@ import { Buffer } from 'buffer';
 import BigNumber from 'bignumber.js';
 import { CborTag } from '.';
 import { IndefiniteArray, IndefiniteMap } from './helpers';
+import SimpleValue from './SimpleValue';
 import {
   MAX_BIG_NUM_INT,
   MAX_BIG_NUM_INT32,
@@ -13,7 +14,22 @@ import {
 } from './utils';
 
 const NAN_BUF = Buffer.from('f97e00', 'hex');
+const POS_INFINITY_BUF = Buffer.from('f97c00', 'hex');
+const NEG_INFINITY_BUF = Buffer.from('f9fc00', 'hex');
 const BREAK = Buffer.from('ff', 'hex');
+
+const integerDoubleToBigNumber = (value: number): BigNumber => {
+  let v = value < 0 ? -value : value;
+  let result = new BigNumber(0);
+  let scale = new BigNumber(1);
+  while (v > 0) {
+    const low = v % POW_2_32;
+    result = result.plus(scale.times(low));
+    scale = scale.times(POW_2_32);
+    v = (v - low) / POW_2_32;
+  }
+  return value < 0 ? result.negated() : result;
+};
 
 export default (
   input: any,
@@ -69,17 +85,6 @@ export default (
       pushUInt64(length);
     }
   }
-  function pushIntNum(value: number) {
-    if (Object.is(value, -0)) {
-      return pushBuffer(Buffer.from('f98000', 'hex'));
-    }
-    if (value >= 0 && value <= POW_2_53) {
-      return pushTypeAndLength(0, value);
-    }
-    if (-POW_2_53 <= value && value < 0) {
-      return pushTypeAndLength(1, -(value + 1));
-    }
-  }
   function pushBigInt(value: BigNumber) {
     let valueM = value;
     let type = 0;
@@ -112,9 +117,23 @@ export default (
       pushBuffer(buf);
     }
   }
+  function pushIntNum(value: number) {
+    if (Object.is(value, -0)) {
+      return pushBuffer(Buffer.from('f98000', 'hex'));
+    }
+    if (value >= 0 && value <= POW_2_53) {
+      return pushTypeAndLength(0, value);
+    }
+    if (-POW_2_53 <= value && value < 0) {
+      return pushTypeAndLength(1, -(value + 1));
+    }
+    return pushBigInt(integerDoubleToBigNumber(value));
+  }
   function pushBigNumber(value: BigNumber) {
     if (value.isNaN()) {
       pushBuffer(NAN_BUF);
+    } else if (!value.isFinite()) {
+      pushBuffer(value.isPositive() ? POS_INFINITY_BUF : NEG_INFINITY_BUF);
     } else if (value.isInteger()) {
       pushBigInt(value);
     } else {
@@ -140,6 +159,12 @@ export default (
 
     switch (typeof value) {
       case 'number': {
+        if (!Number.isFinite(value)) {
+          if (Number.isNaN(value)) {
+            return pushBuffer(NAN_BUF);
+          }
+          return pushBuffer(value > 0 ? POS_INFINITY_BUF : NEG_INFINITY_BUF);
+        }
         if (Math.round(value) === value) {
           return pushIntNum(value);
         }
@@ -184,6 +209,17 @@ export default (
         } else if (value instanceof CborTag) {
           pushTypeAndLength(6, value.tag);
           encodeItem(value.value);
+        } else if (value instanceof SimpleValue) {
+          // simple values 24-31 are reserved/not encodable in one-byte form
+          if (
+            !Number.isInteger(value.value) ||
+            value.value < 0 ||
+            value.value > 255 ||
+            (value.value >= 24 && value.value < 32)
+          ) {
+            throw new Error(`Invalid simple value: ${value.value}`);
+          }
+          pushTypeAndLength(7, value.value);
         } else {
           let entries;
           if (value instanceof Map) {

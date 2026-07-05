@@ -2,3 +2,4 @@
 export class IndefiniteMap extends Map {}
 export class IndefiniteArray extends Array {}
 export { default as CborTag } from './CborTag';
+export { default as SimpleValue } from './SimpleValue';
