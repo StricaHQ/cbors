@@ -2,7 +2,7 @@
 import { Buffer } from 'buffer';
 import BigNumber from 'bignumber.js';
 import { CborTag } from '.';
-import { IndefiniteArray, IndefiniteMap } from './helpers';
+import { EncodedCbor, IndefiniteArray, IndefiniteMap } from './helpers';
 import SimpleValue from './SimpleValue';
 import {
   MAX_BIG_NUM_INT,
@@ -189,6 +189,8 @@ export default (
           if (value instanceof IndefiniteArray) {
             pushBuffer(BREAK);
           }
+        } else if (value instanceof EncodedCbor) {
+          pushBuffer(value.cborBytes);
         } else if (value instanceof Buffer) {
           pushTypeAndLength(2, value.length);
           pushBuffer(value);

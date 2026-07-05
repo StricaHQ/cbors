@@ -4,6 +4,7 @@ import { BigNumber } from 'bignumber.js';
 import {
   CborTag,
   Decoder,
+  EncodedCbor,
   Encoder,
   IndefiniteArray,
   IndefiniteMap,
@@ -267,6 +268,29 @@ describe('cbors', (): void => {
     expect(Encoder.encode(new SimpleValue(255)).toString('hex')).eq('f8ff');
     expect(() => Encoder.encode(new SimpleValue(24))).to.throw('Invalid simple value');
     expect(() => Encoder.encode(new SimpleValue(300))).to.throw('Invalid simple value');
+  });
+
+  it('EncodedCbor splices pre-encoded bytes verbatim', () => {
+    const raw = Buffer.from('a201020304', 'hex'); // {1: 2, 3: 4}
+
+    // spliced as-is, unlike a plain Buffer which gets a byte string header
+    expect(Encoder.encode(new EncodedCbor(raw)).toString('hex')).eq('a201020304');
+    expect(Encoder.encode(raw).toString('hex')).eq('45a201020304');
+
+    // nested inside arrays and maps
+    const strAshish = new EncodedCbor(Buffer.from('66417368697368', 'hex'));
+    expect(Encoder.encode([1, strAshish, 2]).toString('hex')).eq('83016641736869736802');
+    expect(Encoder.encode(new Map().set(1, new EncodedCbor(raw))).toString('hex')).eq(
+      'a101a201020304'
+    );
+
+    // preserves a non-canonical representation that re-encoding would normalize
+    expect(Encoder.encode(23).toString('hex')).eq('17');
+    expect(Encoder.encode(new EncodedCbor(Buffer.from('1817', 'hex'))).toString('hex')).eq('1817');
+
+    // spliced output decodes as the embedded item
+    const decoded = Decoder.decode(Encoder.encode([new EncodedCbor(raw)])).value;
+    expect(deepEql(decoded[0], new Map().set(1, 2).set(3, 4))).eq(true);
   });
 
   it('Stream decode zero-length bytes and string', (done) => {
