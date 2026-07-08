@@ -4,4 +4,14 @@ export default class SimpleValue {
   constructor(value: number) {
     this.value = value;
   }
+
+  private byteSpan: [number, number] = [0, 0];
+
+  setByteSpan(byteSpan: [number, number]) {
+    this.byteSpan = byteSpan;
+  }
+
+  getByteSpan(): [number, number] {
+    return this.byteSpan;
+  }
 }

@@ -471,8 +471,11 @@ class Decoder extends stream.Transform {
             return null;
           case 23:
             return undefined;
-          default:
-            return new SimpleValue(length as number);
+          default: {
+            const simpleValue = new SimpleValue(length as number);
+            simpleValue.setByteSpan([startByte, this.offset]);
+            return simpleValue;
+          }
         }
       }
       default: {

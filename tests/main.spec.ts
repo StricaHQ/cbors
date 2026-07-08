@@ -6,6 +6,8 @@ import {
   Decoder,
   EncodedCbor,
   Encoder,
+  getCborBytes,
+  hasByteSpan,
   IndefiniteArray,
   IndefiniteMap,
   SimpleValue,
@@ -224,6 +226,69 @@ describe('cbors', (): void => {
     const secondByteSpan = decoded.get(1).getByteSpan();
     expect(secondByteSpan[0]).to.eq(6);
     expect(secondByteSpan[1]).to.eq(9);
+  });
+
+  it('SimpleValue byteSpan', () => {
+    const oneByte = Decoder.decode(Buffer.from('ef', 'hex')).value as SimpleValue;
+    expect(oneByte.value).to.eq(15);
+    expect(deepEql(oneByte.getByteSpan(), [0, 1])).eq(true);
+
+    const twoByte = Decoder.decode(Buffer.from('f8ff', 'hex')).value as SimpleValue;
+    expect(twoByte.value).to.eq(255);
+    expect(deepEql(twoByte.getByteSpan(), [0, 2])).eq(true);
+
+    const nested = Decoder.decode(Buffer.from('81f8ff', 'hex')).value;
+    expect(deepEql(nested[0].getByteSpan(), [1, 3])).eq(true);
+  });
+
+  it('byteSpan properties are non-enumerable', () => {
+    const decodedBuffer = Decoder.decode(Buffer.from('42aabb', 'hex')).value as Buffer;
+    expect(Object.keys(decodedBuffer)).to.not.include('byteSpan');
+    expect(Object.keys(decodedBuffer)).to.not.include('getByteSpan');
+    // decoded buffers deep-equal plain buffers of the same content
+    expect(deepEql(decodedBuffer, Buffer.from('aabb', 'hex'))).eq(true);
+
+    const decodedBigNum = Decoder.decode(Buffer.from('c249010000000000000000', 'hex')).value;
+    expect(Object.keys(decodedBigNum)).to.not.include('byteSpan');
+    expect(Object.keys(decodedBigNum)).to.not.include('getByteSpan');
+  });
+
+  it('getByteSpan getter is shared across decoded values', () => {
+    const a = Decoder.decode(Buffer.from('42aabb', 'hex')).value as any;
+    const b = Decoder.decode(Buffer.from('42ccdd', 'hex')).value as any;
+    expect(a.getByteSpan).to.eq(b.getByteSpan);
+  });
+
+  it('hasByteSpan type guard', () => {
+    const decode = (hex: string) => Decoder.decode(Buffer.from(hex, 'hex')).value;
+    expect(hasByteSpan(decode('a10001'))).eq(true); // map
+    expect(hasByteSpan(decode('8100'))).eq(true); // array
+    expect(hasByteSpan(decode('d86600'))).eq(true); // tag
+    expect(hasByteSpan(decode('42aabb'))).eq(true); // bytes
+    expect(hasByteSpan(decode('c249010000000000000000'))).eq(true); // bignum
+    expect(hasByteSpan(decode('ef'))).eq(true); // simple value
+
+    expect(hasByteSpan(decode('0a'))).eq(false); // small int
+    expect(hasByteSpan(decode('66417368697368'))).eq(false); // text string
+    expect(hasByteSpan(decode('f5'))).eq(false); // bool
+    expect(hasByteSpan(decode('f6'))).eq(false); // null
+    expect(hasByteSpan(decode('fb4009000000000000'))).eq(false); // float
+  });
+
+  it('getCborBytes returns original sub-encoding', () => {
+    // {0: [h'AA', h'BB']}
+    const original = Buffer.from('a1008241aa41bb', 'hex');
+    const decoded = Decoder.decode(original).value;
+
+    expect(getCborBytes(original, decoded).toString('hex')).to.eq('a1008241aa41bb');
+
+    const nestedArray = decoded.get(0);
+    expect(getCborBytes(original, nestedArray).toString('hex')).to.eq('8241aa41bb');
+    expect(getCborBytes(original, nestedArray[0]).toString('hex')).to.eq('41aa');
+
+    // accepts the chunk array shape emitted by the streaming decoder
+    const chunks = [original.subarray(0, 3), original.subarray(3)];
+    expect(getCborBytes(chunks, nestedArray).toString('hex')).to.eq('8241aa41bb');
   });
 
   it('Decode negative and special float16', () => {

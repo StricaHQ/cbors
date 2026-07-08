@@ -18,14 +18,35 @@ export const getBigNum = (f: number, g: number): number | BigNumber => {
   return f * SHIFT32 + g;
 };
 
-export const addSpanBytesToObject = (obj: any, span: [number, number]): any => {
-  const spanObj = obj;
-  spanObj.byteSpan = span;
-  spanObj.getByteSpan = function (): [number, number] {
-    return this.byteSpan;
-  };
+// [start, end) byte offsets of a decoded item within the original CBOR buffer
+export type ByteSpan = [number, number];
 
-  return spanObj;
+// decoded values that carry the byte offsets of their original CBOR encoding
+export interface Spanned {
+  getByteSpan(): ByteSpan;
+}
+
+// a single shared getter avoids allocating a closure per decoded value
+// eslint-disable-next-line no-unused-vars
+function sharedGetByteSpan(this: { byteSpan: ByteSpan }): ByteSpan {
+  return this.byteSpan;
+}
+
+export const addSpanBytesToObject = <T extends object>(obj: T, span: ByteSpan): T & Spanned => {
+  Object.defineProperty(obj, 'byteSpan', {
+    value: span,
+    enumerable: false,
+    writable: true,
+    configurable: true,
+  });
+  Object.defineProperty(obj, 'getByteSpan', {
+    value: sharedGetByteSpan,
+    enumerable: false,
+    writable: true,
+    configurable: true,
+  });
+
+  return obj as T & Spanned;
 };
 
 const td = new TextDecoder('utf8', { fatal: true, ignoreBOM: true });
