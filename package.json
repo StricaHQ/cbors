@@ -21,6 +21,7 @@
     "build": "rm -rf dist && tsc && webpack",
     "lint": "eslint 'src/**/*.ts'",
     "lint:fix": "eslint --fix 'src/**/*.ts'",
+    "prepublishOnly": "yarn build && yarn test",
     "test": "ts-mocha tests/**/*.spec.ts"
   },
   "author": "Strica",

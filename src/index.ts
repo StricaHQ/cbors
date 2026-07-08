@@ -5,4 +5,5 @@ export const Encoder = {
   encode,
 };
 export { default as Decoder } from './Decoder';
+export type { DecoderOptions } from './Decoder';
 export * from './helpers';

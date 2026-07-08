@@ -39,6 +39,18 @@ const isBreakPoint = (value: number): boolean => {
   return true;
 };
 
+// a single Buffer can never exceed 2^32 - 1 bytes, so any string/bytes item
+// declaring a larger length can never be decoded
+const MAX_POSSIBLE_STRING_LENGTH = 4294967295;
+const DEFAULT_MAX_DEPTH = 1024;
+
+export type DecoderOptions = {
+  // reject byte/text strings (or indefinite chunks) declaring a length above this
+  maxStringLength?: number;
+  // reject items nested deeper than this
+  maxDepth?: number;
+};
+
 class Decoder extends stream.Transform {
   private bl: any;
 
@@ -46,33 +58,40 @@ class Decoder extends stream.Transform {
 
   private fresh: boolean = true;
 
+  private maxStringLength: number;
+
+  private maxDepth: number;
+
   private _parser = this.parse();
 
   private offset: number = 0;
 
   private usedBytes: Array<Buffer> = [];
 
-  constructor() {
+  constructor(options: DecoderOptions = {}) {
     super({
       writableObjectMode: false,
       readableObjectMode: true,
     });
+    this.maxStringLength = Math.min(
+      options.maxStringLength ?? MAX_POSSIBLE_STRING_LENGTH,
+      MAX_POSSIBLE_STRING_LENGTH
+    );
+    this.maxDepth = options.maxDepth ?? DEFAULT_MAX_DEPTH;
     this.bl = new BufferList();
     this.restart();
   }
 
-  static decode(inputBytes: Buffer): { bytes: Buffer; value: any } {
-    const decoder = new Decoder();
+  static decode(inputBytes: Buffer, options?: DecoderOptions): { bytes: Buffer; value: any } {
+    const decoder = new Decoder(options);
     const bs = new BufferList();
     bs.push(inputBytes);
     const parser = decoder.parse();
     let state = parser.next();
 
     while (!state.done) {
+      // read throws 'Insufficient data' when the input is truncated
       const b = bs.read(state.value);
-      if (b == null || b.length !== state.value) {
-        throw new Error('Insufficient data');
-      }
       state = parser.next(b);
     }
 
@@ -96,6 +115,13 @@ class Decoder extends stream.Transform {
   private updateTracker(bytes: Buffer) {
     this.usedBytes.push(bytes);
     this.offset += bytes.length;
+  }
+
+  private checkStringLength(length: number | BigNumber): number {
+    if (BigNumber.isBigNumber(length) || length > this.maxStringLength) {
+      throw new Error(`String length ${length.toString()} exceeds maximum allowed`);
+    }
+    return length;
   }
 
   private *readIndefiniteStringLength(
@@ -122,6 +148,7 @@ class Decoder extends stream.Transform {
       if (length < 0 || number >> 5 !== majorType) {
         throw new Error('Invalid indefinite length encoding');
       }
+      length = this.checkStringLength(length);
     }
     return length;
   }
@@ -196,7 +223,10 @@ class Decoder extends stream.Transform {
     return cb();
   }
 
-  private *parse(suppliedBytes?: Buffer): Generator<number, any, Buffer> {
+  private *parse(suppliedBytes?: Buffer, depth: number = 0): Generator<number, any, Buffer> {
+    if (depth > this.maxDepth) {
+      throw new Error('Maximum depth exceeded');
+    }
     let startByte = this.offset;
     let bytes;
     if (suppliedBytes) {
@@ -294,12 +324,12 @@ class Decoder extends stream.Transform {
           const buf = Buffer.concat(chunks);
           return addSpanBytesToObject(buf, [startByte, this.offset]);
         }
-        bytes = yield length as number;
+        bytes = yield this.checkStringLength(length);
         this.updateTracker(bytes);
         return addSpanBytesToObject(bytes, [startByte, this.offset]);
       }
       case 3: {
-        const stringBuf: Array<Buffer> = [];
+        const stringParts: Array<string> = [];
         if (length < 0) {
           {
             // read indefinite length
@@ -317,7 +347,8 @@ class Decoder extends stream.Transform {
           while (length >= 0) {
             bytes = yield length as number;
             this.updateTracker(bytes);
-            stringBuf.push(bytes);
+            // RFC 8949: each indefinite text chunk must be valid UTF-8 on its own
+            stringParts.push(utf8Decoder(bytes));
             //
 
             {
@@ -334,22 +365,23 @@ class Decoder extends stream.Transform {
             }
           }
 
-          const string = utf8Decoder(Buffer.concat(stringBuf));
-          return string;
+          return stringParts.join('');
         }
-        bytes = yield length as number;
+        bytes = yield this.checkStringLength(length);
         this.updateTracker(bytes);
         const string = utf8Decoder(bytes);
         return string;
       }
       case 4: {
+        // a definite element count beyond 2^53 can never be satisfied
+        if (BigNumber.isBigNumber(length)) throw new Error('Invalid array length');
         if (length < 0) {
           const ary = new CborArray();
           bytes = yield 1;
           this.updateTracker(bytes);
           let bp = bytes.readUInt8(0);
           while (!isBreakPoint(bp)) {
-            ary.push(yield* this.parse(bytes));
+            ary.push(yield* this.parse(bytes, depth + 1));
 
             bytes = yield 1;
             this.updateTracker(bytes);
@@ -360,20 +392,22 @@ class Decoder extends stream.Transform {
         }
         const ary = new CborArray();
         for (let i = 0; i < length; i += 1) {
-          ary.push(yield* this.parse());
+          ary.push(yield* this.parse(undefined, depth + 1));
         }
         ary.setByteSpan([startByte, this.offset]);
         return ary;
       }
       case 5: {
+        // a definite entry count beyond 2^53 can never be satisfied
+        if (BigNumber.isBigNumber(length)) throw new Error('Invalid map length');
         if (length < 0) {
           const obj = new CborMap();
           bytes = yield 1;
           this.updateTracker(bytes);
           let bp = bytes.readUInt8(0);
           while (!isBreakPoint(bp)) {
-            const key = yield* this.parse(bytes);
-            const val = yield* this.parse();
+            const key = yield* this.parse(bytes, depth + 1);
+            const val = yield* this.parse(undefined, depth + 1);
             obj.set(key, val);
 
             bytes = yield 1;
@@ -386,8 +420,8 @@ class Decoder extends stream.Transform {
         const obj = new CborMap();
 
         for (let i = 0; i < length; i += 1) {
-          const key = yield* this.parse();
-          const val = yield* this.parse();
+          const key = yield* this.parse(undefined, depth + 1);
+          const val = yield* this.parse(undefined, depth + 1);
           obj.set(key, val);
         }
 
@@ -396,7 +430,7 @@ class Decoder extends stream.Transform {
       }
       case 6: {
         const tagNumber = length;
-        const taggedValue = yield* this.parse();
+        const taggedValue = yield* this.parse(undefined, depth + 1);
 
         // Handle bignum tags (RFC 8949 / RFC 7049):
         // Tag 2: positive bignum
@@ -424,6 +458,10 @@ class Decoder extends stream.Transform {
         return tag;
       }
       case 7: {
+        // RFC 8949 §3.3: two-byte simple values below 32 are ill-formed
+        if (additionalInformation === 24 && (length as number) < 32) {
+          throw new Error(`Invalid two-byte simple value encoding: ${length}`);
+        }
         switch (length) {
           case 20:
             return false;

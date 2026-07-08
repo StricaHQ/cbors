@@ -31,10 +31,8 @@ const integerDoubleToBigNumber = (value: number): BigNumber => {
   return value < 0 ? result.negated() : result;
 };
 
-export default (
-  input: any,
-  options: { collapseBigNumber: Boolean } = { collapseBigNumber: true }
-) => {
+export default (input: any, options: { collapseBigNumber?: boolean } = {}) => {
+  const opts = { collapseBigNumber: true, ...options };
   const outBufAry: Array<Buffer> = [];
 
   function pushFloat64(value: number) {
@@ -85,6 +83,24 @@ export default (
       pushUInt64(length);
     }
   }
+  function pushTagNumber(tag: number | BigNumber) {
+    // decoded tags above 2^53 carry their tag number as a BigNumber
+    if (BigNumber.isBigNumber(tag)) {
+      if (!tag.isInteger() || tag.isNegative() || tag.gt(MAX_BIG_NUM_INT64)) {
+        throw new Error(`Invalid tag number: ${tag.toString()}`);
+      }
+      if (tag.lte(MAX_BIG_NUM_INT32)) {
+        return pushTypeAndLength(6, tag.toNumber());
+      }
+      pushUInt8((6 << 5) | 27);
+      pushUInt32(tag.dividedToIntegerBy(SHIFT32).toNumber());
+      return pushUInt32(tag.mod(SHIFT32).toNumber());
+    }
+    if (!Number.isInteger(tag) || tag < 0 || tag >= 2 ** 64) {
+      throw new Error(`Invalid tag number: ${tag}`);
+    }
+    return pushTypeAndLength(6, tag);
+  }
   function pushBigInt(value: BigNumber) {
     let valueM = value;
     let type = 0;
@@ -96,7 +112,7 @@ export default (
       tag = 3;
     }
 
-    if (options.collapseBigNumber && valueM.lte(MAX_BIG_NUM_INT64)) {
+    if (opts.collapseBigNumber && valueM.lte(MAX_BIG_NUM_INT64)) {
       if (valueM.lte(MAX_BIG_NUM_INT32)) {
         return pushTypeAndLength(type, valueM.toNumber());
       }
@@ -176,6 +192,13 @@ export default (
         pushTypeAndLength(3, strBuff.length);
         return pushBuffer(strBuff);
       }
+      case 'bigint': {
+        return pushBigNumber(new BigNumber(value.toString()));
+      }
+      case 'function':
+      case 'symbol': {
+        throw new Error(`Unsupported type for CBOR encoding: ${typeof value}`);
+      }
       default: {
         if (Array.isArray(value)) {
           if (value instanceof IndefiniteArray) {
@@ -209,7 +232,7 @@ export default (
         } else if (BigNumber.isBigNumber(value)) {
           pushBigNumber(value);
         } else if (value instanceof CborTag) {
-          pushTypeAndLength(6, value.tag);
+          pushTagNumber(value.tag);
           encodeItem(value.value);
         } else if (value instanceof SimpleValue) {
           // simple values 24-31 are reserved/not encodable in one-byte form
@@ -222,6 +245,24 @@ export default (
             throw new Error(`Invalid simple value: ${value.value}`);
           }
           pushTypeAndLength(7, value.value);
+        } else if (
+          // these have no own enumerable properties (or index-only ones), so the
+          // map fallback below would silently corrupt them into (empty) maps
+          value instanceof Date ||
+          value instanceof Set ||
+          value instanceof WeakMap ||
+          value instanceof WeakSet ||
+          value instanceof RegExp ||
+          value instanceof Error ||
+          value instanceof Promise ||
+          value instanceof Number ||
+          value instanceof String ||
+          value instanceof Boolean ||
+          ArrayBuffer.isView(value) // typed arrays other than Uint8Array, DataView
+        ) {
+          throw new Error(
+            `Unsupported type for CBOR encoding: ${Object.prototype.toString.call(value)}`
+          );
         } else {
           let entries;
           if (value instanceof Map) {

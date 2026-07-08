@@ -293,6 +293,151 @@ describe('cbors', (): void => {
     expect(deepEql(decoded[0], new Map().set(1, 2).set(3, 4))).eq(true);
   });
 
+  it('Encode bigint', () => {
+    expect(Encoder.encode(BigInt(10)).toString('hex')).eq('0a');
+    expect(Encoder.encode(BigInt(-10)).toString('hex')).eq('29');
+    expect(Encoder.encode(BigInt(1000000000000)).toString('hex')).eq('1b000000e8d4a51000');
+    expect(Encoder.encode(BigInt('18446744073709551615')).toString('hex')).eq('1bffffffffffffffff');
+    expect(Encoder.encode(BigInt('-18446744073709551616')).toString('hex')).eq(
+      '3bffffffffffffffff'
+    );
+    // beyond 64-bit falls back to bignum tags
+    expect(Encoder.encode(BigInt('18446744073709551616')).toString('hex')).eq(
+      'c249010000000000000000'
+    );
+    expect(Encoder.encode(BigInt('-18446744073709551617')).toString('hex')).eq(
+      'c349010000000000000000'
+    );
+    expect(
+      Encoder.encode(BigInt('1000000000000000000000'), { collapseBigNumber: false }).toString('hex')
+    ).eq('c2493635c9adc5dea00000');
+    // round trip through the decoder's BigNumber representation
+    const decoded = Decoder.decode(Encoder.encode(BigInt('18446744073709551616')))
+      .value as BigNumber;
+    expect(decoded.toFixed()).eq('18446744073709551616');
+  });
+
+  it('Encode throws for unsupported types instead of corrupting', () => {
+    const unsupported: Array<[string, any]> = [
+      ['Date', new Date()],
+      ['Set', new Set([1, 2])],
+      ['WeakMap', new WeakMap()],
+      ['RegExp', /x/],
+      ['Error', new Error('x')],
+      ['Promise', Promise.resolve()],
+      ['boxed Number', Object(5)],
+      ['Float32Array', new Float32Array([1.5])],
+      ['Int8Array', new Int8Array([1])],
+      ['DataView', new DataView(new ArrayBuffer(1))],
+      ['function', () => 1],
+      ['symbol', Symbol('x')],
+    ];
+    for (const [name, v] of unsupported) {
+      expect(() => Encoder.encode(v), name).to.throw('Unsupported type');
+    }
+    // plain objects, Maps and the byte-string family still encode
+    expect(Encoder.encode({ a: 1 }).toString('hex')).eq('a1616101');
+    expect(Encoder.encode(new Uint8Array([1])).toString('hex')).eq('4101');
+    expect(Encoder.encode(new Uint8ClampedArray([1])).toString('hex')).eq('4101');
+  });
+
+  it('Encode options merge with defaults', () => {
+    expect(Encoder.encode(new BigNumber(5)).toString('hex')).eq('05');
+    expect(Encoder.encode(new BigNumber(5), {}).toString('hex')).eq('05');
+    expect(Encoder.encode(new BigNumber(5), { collapseBigNumber: false }).toString('hex')).eq(
+      'c24105'
+    );
+  });
+
+  it('Tag numbers beyond 2^53 round trip', () => {
+    const hex = 'dbffffffffffffffff00';
+    const decoded = Decoder.decode(Buffer.from(hex, 'hex')).value as CborTag;
+    expect(BigNumber.isBigNumber(decoded.tag)).eq(true);
+    expect(Encoder.encode(decoded).toString('hex')).eq(hex);
+    // tag numbers needing 8 bytes but below 2^53 still work
+    expect(Encoder.encode(new CborTag(0, 4294967296)).toString('hex')).eq('db000000010000000000');
+    expect(() => Encoder.encode(new CborTag(0, -1))).to.throw('Invalid tag number');
+    expect(() => Encoder.encode(new CborTag(0, 1.5))).to.throw('Invalid tag number');
+  });
+
+  it('Decode rejects ill-formed two-byte simple values', () => {
+    expect(() => Decoder.decode(Buffer.from('f800', 'hex'))).to.throw('Invalid two-byte simple');
+    expect(() => Decoder.decode(Buffer.from('f818', 'hex'))).to.throw('Invalid two-byte simple');
+    expect(() => Decoder.decode(Buffer.from('f81f', 'hex'))).to.throw('Invalid two-byte simple');
+    expect((Decoder.decode(Buffer.from('f820', 'hex')).value as SimpleValue).value).eq(32);
+  });
+
+  it('Decode rejects indefinite text chunks that are not valid UTF-8 alone', () => {
+    // "ü" (c3bc) split across two chunks
+    expect(() => Decoder.decode(Buffer.from('7f61c361bcff', 'hex'))).to.throw();
+    // valid chunks still concatenate
+    expect(Decoder.decode(Buffer.from('7f62c3bc6161ff', 'hex')).value).eq('üa');
+  });
+
+  it('Decode rejects unsatisfiable declared lengths fast', () => {
+    expect(() => Decoder.decode(Buffer.from('5bffffffffffffffff', 'hex'))).to.throw(
+      'exceeds maximum'
+    );
+    expect(() => Decoder.decode(Buffer.from('7b0020000000000000', 'hex'))).to.throw(
+      'exceeds maximum'
+    );
+    expect(() => Decoder.decode(Buffer.from('9bffffffffffffffff', 'hex'))).to.throw(
+      'Invalid array length'
+    );
+    expect(() => Decoder.decode(Buffer.from('bbffffffffffffffff', 'hex'))).to.throw(
+      'Invalid map length'
+    );
+    // configurable per-string cap
+    expect(() => Decoder.decode(Buffer.from('4401020304', 'hex'), { maxStringLength: 3 })).to.throw(
+      'exceeds maximum'
+    );
+    expect(
+      Decoder.decode(Buffer.from('4401020304', 'hex'), { maxStringLength: 4 }).value.length
+    ).eq(4);
+  });
+
+  it('Decode enforces max nesting depth', () => {
+    const nested = (depth: number) =>
+      Buffer.concat([Buffer.alloc(depth, 0x81), Buffer.from([0x00])]);
+    expect(() => Decoder.decode(nested(2000))).to.throw('Maximum depth exceeded');
+    expect(Decoder.decode(nested(1000)).value).to.be.an('array');
+    expect(() => Decoder.decode(nested(5), { maxDepth: 3 })).to.throw('Maximum depth exceeded');
+    expect(Decoder.decode(nested(3), { maxDepth: 3 }).value).to.be.an('array');
+  });
+
+  it('Truncated input throws Insufficient data', () => {
+    expect(() => Decoder.decode(Buffer.from('4401', 'hex'))).to.throw('Insufficient data');
+    expect(() => Decoder.decode(Buffer.alloc(0))).to.throw('Insufficient data');
+  });
+
+  it('Stream errors instead of hanging on absurd declared string length', (done) => {
+    const decoder = new Decoder();
+    decoder.on('data', () => done(new Error('should not decode')));
+    decoder.on('error', (e: Error) => {
+      expect(e.message).to.contain('exceeds maximum');
+      done();
+    });
+    decoder.write(Buffer.from('5bffffffffffffffff', 'hex'));
+  });
+
+  it('Stream decode of a large item split into small chunks', (done) => {
+    const payload = Buffer.alloc(1024 * 1024, 0xaa);
+    const item = Buffer.concat([Buffer.from('5a00100000', 'hex'), payload]);
+    const decoder = new Decoder();
+    decoder.on('data', (data: any) => {
+      expect(Buffer.isBuffer(data.value)).eq(true);
+      expect(data.value.length).eq(payload.length);
+      expect(data.value.equals(payload)).eq(true);
+      expect(Buffer.concat(data.bytes).equals(item)).eq(true);
+      done();
+    });
+    decoder.on('error', done);
+    for (let off = 0; off < item.length; off += 2048) {
+      decoder.write(item.slice(off, off + 2048));
+    }
+    decoder.end();
+  });
+
   it('Stream decode zero-length bytes and string', (done) => {
     const decoder = new Decoder();
     const results: any[] = [];
