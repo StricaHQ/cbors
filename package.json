@@ -1,6 +1,6 @@
 {
   "name": "@stricahq/cbors",
-  "version": "1.0.4",
+  "version": "1.1.0",
   "description": "cbor encoder and decoder with annotation",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
