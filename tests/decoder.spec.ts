@@ -1,4 +1,4 @@
-import { expect } from 'chai';
+import { describe, it, expect } from 'vitest';
 import { Decoder, SimpleValue } from '../src/index';
 
 describe('decoder', (): void => {

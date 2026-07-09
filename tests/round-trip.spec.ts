@@ -1,4 +1,4 @@
-import { expect } from 'chai';
+import { describe, it, expect } from 'vitest';
 import * as _ from 'lodash';
 import { BigNumber } from 'bignumber.js';
 import {

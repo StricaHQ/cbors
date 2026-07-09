@@ -31,7 +31,7 @@ const integerDoubleToBigNumber = (value: number): BigNumber => {
   return value < 0 ? result.negated() : result;
 };
 
-export default (input: any, options: { collapseBigNumber?: boolean } = {}) => {
+export default (input: any, options: { collapseBigNumber?: boolean } = {}): Buffer => {
   const opts = { collapseBigNumber: true, ...options };
   const outBufAry: Array<Buffer> = [];
 
@@ -156,7 +156,7 @@ export default (input: any, options: { collapseBigNumber?: boolean } = {}) => {
       // push decimal
       pushTypeAndLength(6, 4);
       pushTypeAndLength(4, 2);
-      const dec = value.decimalPlaces();
+      const dec = value.decimalPlaces()!;
       const slide = value.shiftedBy(dec);
       pushIntNum(-dec);
       if (slide.abs().isLessThan(MAX_BIG_NUM_INT)) {

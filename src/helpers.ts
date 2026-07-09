@@ -45,7 +45,7 @@ export class EncodedCbor {
     this.cborBuffer = cborBuffer;
   }
 
-  get cborBytes() {
+  get cborBytes(): Buffer {
     return this.cborBuffer;
   }
 }

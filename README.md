@@ -18,7 +18,7 @@ yarn add @stricahq/cbors
 ### Browser
 
 ```html
-<script src="[use jsDelivr or Unpkg]"></script>
+<script src="https://cdn.jsdelivr.net/npm/@stricahq/cbors/dist/index.min.js"></script>
 
 // access cbors global variable
 ```
@@ -32,7 +32,7 @@ const encoded = Encoder.encode(new Map().set(0, [1, 2]));
 const { value } = Decoder.decode(encoded);
 ```
 
-The examples in this readme are kept short, the [tests](https://github.com/StricaHQ/cbors/blob/master/tests/main.spec.ts) cover all supported data types and are the best place to look for more.
+The examples in this readme are kept short, the [tests](https://github.com/StricaHQ/cbors/tree/master/tests) cover all supported data types and are the best place to look for more.
 
 ## Cardano
 
