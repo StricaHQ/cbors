@@ -1,17 +1,14 @@
-import BigNumber from 'bignumber.js';
-
 const MAX_SAFE_HIGH = 0x1fffff;
 export const SHIFT32 = 0x100000000;
 export const POW_2_24 = 5.960464477539063e-8;
 export const POW_2_32 = 4294967296;
 export const POW_2_53 = 9007199254740992;
-export const MAX_BIG_NUM_INT = new BigNumber('0x20000000000000');
-export const MAX_BIG_NUM_INT32 = new BigNumber('0xffffffff');
-export const MAX_BIG_NUM_INT64 = new BigNumber('0xffffffffffffffff');
 
-export const getBigNum = (f: number, g: number): number | BigNumber => {
+// combine the high/low 32-bit halves of a CBOR uint64; stays a JS number while
+// it fits in ±2^53, otherwise a bigint
+export const getBigNum = (f: number, g: number): number | bigint => {
   if (f > MAX_SAFE_HIGH) {
-    return new BigNumber(f).times(SHIFT32).plus(g);
+    return BigInt(f) * 0x100000000n + BigInt(g);
   }
   return f * SHIFT32 + g;
 };

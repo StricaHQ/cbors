@@ -3,10 +3,7 @@ import BufferList from '../internal/BufferList';
 import Reader, { DecoderOptions } from './Reader';
 
 // decode a single, complete CBOR item from a contiguous buffer.
-export const decode = (
-  inputBytes: Buffer,
-  options?: DecoderOptions
-): { bytes: Buffer; value: any } => {
+export const decode = (inputBytes: Buffer, options?: DecoderOptions): any => {
   const reader = new Reader(options);
   const bs = new BufferList();
   bs.push(inputBytes);
@@ -22,8 +19,5 @@ export const decode = (
   if (bs.length > 0) {
     throw new Error('Remaining Bytes');
   }
-  return {
-    bytes: inputBytes,
-    value: state.value,
-  };
+  return state.value;
 };

@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import * as _ from 'lodash';
-import { BigNumber } from 'bignumber.js';
-import { decode, encode, EncodedCbor } from '../src/index';
+import { CborTag, decode, encode, EncodedCbor } from '../src/index';
 
 const deepEql = _.isEqual;
 
@@ -13,7 +12,7 @@ describe('encoder', (): void => {
 
     const encoded = encode(45000000000000000);
     expect(encoded[0]).eq(0x1b); // unsigned int major type, not a float
-    const roundTripped = decode(encoded).value as BigNumber;
+    const roundTripped = decode(encoded) as bigint;
     expect(roundTripped.toString()).eq('45000000000000000');
 
     // beyond 2^64 falls back to bignum tags
@@ -25,9 +24,7 @@ describe('encoder', (): void => {
     expect(encode(Infinity).toString('hex')).eq('f97c00');
     expect(encode(-Infinity).toString('hex')).eq('f9fc00');
     expect(encode(NaN).toString('hex')).eq('f97e00');
-    expect(encode(new BigNumber(Infinity)).toString('hex')).eq('f97c00');
-    expect(encode(new BigNumber(-Infinity)).toString('hex')).eq('f9fc00');
-    expect(Object.is(decode(encode(-0)).value, -0)).eq(true);
+    expect(Object.is(decode(encode(-0)), -0)).eq(true);
   });
 
   it('EncodedCbor splices pre-encoded bytes verbatim', () => {
@@ -49,7 +46,7 @@ describe('encoder', (): void => {
     expect(encode(new EncodedCbor(Buffer.from('1817', 'hex'))).toString('hex')).eq('1817');
 
     // spliced output decodes as the embedded item
-    const decoded = decode(encode([new EncodedCbor(raw)])).value;
+    const decoded = decode(encode([new EncodedCbor(raw)]));
     expect(deepEql(decoded[0], new Map().set(1, 2).set(3, 4))).eq(true);
   });
 
@@ -69,12 +66,13 @@ describe('encoder', (): void => {
       'c349010000000000000000'
     );
     expect(
-      encode(BigInt('1000000000000000000000'), { collapseBigNumber: false }).toString('hex')
+      encode(BigInt('1000000000000000000000'), { collapseBigInt: false }).toString('hex')
     ).eq('c2493635c9adc5dea00000');
-    // round trip through the decoder's BigNumber representation
-    const decoded = decode(encode(BigInt('18446744073709551616')))
-      .value as BigNumber;
-    expect(decoded.toFixed()).eq('18446744073709551616');
+    // collapseBigInt: false forces a bignum tag even for 64-bit-representable values
+    expect(encode(BigInt(10), { collapseBigInt: false }).toString('hex')).eq('c2410a');
+    // round trip through the decoder's bigint representation
+    const decoded = decode(encode(BigInt('18446744073709551616'))) as bigint;
+    expect(decoded.toString()).eq('18446744073709551616');
   });
 
   it('Encode throws for unsupported types instead of corrupting', () => {
@@ -91,6 +89,8 @@ describe('encoder', (): void => {
       ['DataView', new DataView(new ArrayBuffer(1))],
       ['function', () => 1],
       ['symbol', Symbol('x')],
+      // BigNumber (dropped in v2) is rejected, not silently encoded as {s,e,c}
+      ['BigNumber', { _isBigNumber: true, s: 1, e: 0, c: [5] }],
     ];
     for (const [name, v] of unsupported) {
       expect(() => encode(v), name).to.throw('Unsupported type');
@@ -101,11 +101,12 @@ describe('encoder', (): void => {
     expect(encode(new Uint8ClampedArray([1])).toString('hex')).eq('4101');
   });
 
-  it('Encode options merge with defaults', () => {
-    expect(encode(new BigNumber(5)).toString('hex')).eq('05');
-    expect(encode(new BigNumber(5), {}).toString('hex')).eq('05');
-    expect(encode(new BigNumber(5), { collapseBigNumber: false }).toString('hex')).eq(
-      'c24105'
-    );
+  it('Encode tag 4 decimal fraction via CborTag', () => {
+    // bigint is integer-only; decimal fractions are built explicitly and round trip
+    const oneAndHalf = new CborTag([-1, 15], 4); // 15 * 10^-1
+    expect(encode(oneAndHalf).toString('hex')).eq('c482200f');
+    const decoded = decode(encode(oneAndHalf)) as CborTag;
+    expect(decoded.tag).eq(4);
+    expect(deepEql(decoded.value, [-1, 15])).eq(true);
   });
 });

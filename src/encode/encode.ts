@@ -1,40 +1,27 @@
 /* eslint-disable no-bitwise */
 import { Buffer } from 'buffer';
-import BigNumber from 'bignumber.js';
 import CborTag from '../values/CborTag';
 import EncodedCbor from '../values/EncodedCbor';
 import IndefiniteArray from '../values/IndefiniteArray';
 import IndefiniteMap from '../values/IndefiniteMap';
 import SimpleValue from '../values/SimpleValue';
-import {
-  MAX_BIG_NUM_INT,
-  MAX_BIG_NUM_INT32,
-  MAX_BIG_NUM_INT64,
-  POW_2_32,
-  POW_2_53,
-  SHIFT32,
-} from '../internal/numbers';
+import { POW_2_32, POW_2_53 } from '../internal/numbers';
 
 const NAN_BUF = Buffer.from('f97e00', 'hex');
 const POS_INFINITY_BUF = Buffer.from('f97c00', 'hex');
 const NEG_INFINITY_BUF = Buffer.from('f9fc00', 'hex');
 const BREAK = Buffer.from('ff', 'hex');
 
-const integerDoubleToBigNumber = (value: number): BigNumber => {
-  let v = value < 0 ? -value : value;
-  let result = new BigNumber(0);
-  let scale = new BigNumber(1);
-  while (v > 0) {
-    const low = v % POW_2_32;
-    result = result.plus(scale.times(low));
-    scale = scale.times(POW_2_32);
-    v = (v - low) / POW_2_32;
-  }
-  return value < 0 ? result.negated() : result;
+const MAX_U64 = 0xffffffffffffffffn;
+
+export type EncodeOptions = {
+  // collapse a bigint that fits in 64 bits into a minimal-width major type 0/1
+  // integer instead of a bignum tag (2/3). Defaults to true.
+  collapseBigInt?: boolean;
 };
 
-export const encode = (input: any, options: { collapseBigNumber?: boolean } = {}): Buffer => {
-  const opts = { collapseBigNumber: true, ...options };
+export const encode = (input: any, options: EncodeOptions = {}): Buffer => {
+  const opts = { collapseBigInt: true, ...options };
   const outBufAry: Array<Buffer> = [];
 
   function pushFloat64(value: number) {
@@ -85,50 +72,57 @@ export const encode = (input: any, options: { collapseBigNumber?: boolean } = {}
       pushUInt64(length);
     }
   }
-  function pushTagNumber(tag: number | BigNumber) {
-    // decoded tags above 2^53 carry their tag number as a BigNumber
-    if (BigNumber.isBigNumber(tag)) {
-      if (!tag.isInteger() || tag.isNegative() || tag.gt(MAX_BIG_NUM_INT64)) {
-        throw new Error(`Invalid tag number: ${tag.toString()}`);
+  // minimal-width head byte + payload for a magnitude that fits in 0..2^64-1
+  function pushUintHead(type: number, v: bigint) {
+    if (v < 24n) {
+      pushUInt8((type << 5) | Number(v));
+    } else if (v <= 0xffn) {
+      pushUInt8((type << 5) | 24);
+      pushUInt8(Number(v));
+    } else if (v <= 0xffffn) {
+      pushUInt8((type << 5) | 25);
+      pushUInt16(Number(v));
+    } else if (v <= 0xffffffffn) {
+      pushUInt8((type << 5) | 26);
+      pushUInt32(Number(v));
+    } else {
+      pushUInt8((type << 5) | 27);
+      pushUInt32(Number(v >> 32n));
+      pushUInt32(Number(v & 0xffffffffn));
+    }
+  }
+  function pushTagNumber(tag: number | bigint) {
+    if (typeof tag === 'bigint') {
+      if (tag < 0n || tag > MAX_U64) {
+        throw new Error(`Invalid tag number: ${tag}`);
       }
-      if (tag.lte(MAX_BIG_NUM_INT32)) {
-        return pushTypeAndLength(6, tag.toNumber());
-      }
-      pushUInt8((6 << 5) | 27);
-      pushUInt32(tag.dividedToIntegerBy(SHIFT32).toNumber());
-      return pushUInt32(tag.mod(SHIFT32).toNumber());
+      return pushUintHead(6, tag);
     }
     if (!Number.isInteger(tag) || tag < 0 || tag >= 2 ** 64) {
       throw new Error(`Invalid tag number: ${tag}`);
     }
     return pushTypeAndLength(6, tag);
   }
-  function pushBigInt(value: BigNumber) {
-    let valueM = value;
+  function pushBigInt(value: bigint) {
+    let v = value;
     let type = 0;
     let tag = 2;
 
-    if (valueM.isNegative()) {
-      valueM = valueM.negated().minus(1);
+    if (v < 0n) {
+      v = -v - 1n;
       type = 1;
       tag = 3;
     }
 
-    if (opts.collapseBigNumber && valueM.lte(MAX_BIG_NUM_INT64)) {
-      if (valueM.lte(MAX_BIG_NUM_INT32)) {
-        return pushTypeAndLength(type, valueM.toNumber());
-      }
-      pushUInt8((type << 5) | 27);
-      pushUInt32(valueM.dividedToIntegerBy(SHIFT32).toNumber());
-      pushUInt32(valueM.mod(SHIFT32).toNumber());
+    if (opts.collapseBigInt && v <= MAX_U64) {
+      pushUintHead(type, v);
     } else {
-      let str = valueM.toString(16);
+      let str = v.toString(16);
       if (str.length % 2) {
         str = `0${str}`;
       }
       // push tag
       pushTypeAndLength(6, tag);
-
       // push buffer
       const buf = Buffer.from(str, 'hex');
       pushTypeAndLength(2, buf.length);
@@ -145,30 +139,8 @@ export const encode = (input: any, options: { collapseBigNumber?: boolean } = {}
     if (-POW_2_53 <= value && value < 0) {
       return pushTypeAndLength(1, -(value + 1));
     }
-    return pushBigInt(integerDoubleToBigNumber(value));
+    return pushBigInt(BigInt(value));
   }
-  function pushBigNumber(value: BigNumber) {
-    if (value.isNaN()) {
-      pushBuffer(NAN_BUF);
-    } else if (!value.isFinite()) {
-      pushBuffer(value.isPositive() ? POS_INFINITY_BUF : NEG_INFINITY_BUF);
-    } else if (value.isInteger()) {
-      pushBigInt(value);
-    } else {
-      // push decimal
-      pushTypeAndLength(6, 4);
-      pushTypeAndLength(4, 2);
-      const dec = value.decimalPlaces()!;
-      const slide = value.shiftedBy(dec);
-      pushIntNum(-dec);
-      if (slide.abs().isLessThan(MAX_BIG_NUM_INT)) {
-        pushIntNum(slide.toNumber());
-      } else {
-        pushBigInt(slide);
-      }
-    }
-  }
-
   function encodeItem(value: any) {
     if (value === false) return pushUInt8(0xf4);
     if (value === true) return pushUInt8(0xf5);
@@ -195,7 +167,7 @@ export const encode = (input: any, options: { collapseBigNumber?: boolean } = {}
         return pushBuffer(strBuff);
       }
       case 'bigint': {
-        return pushBigNumber(new BigNumber(value.toString()));
+        return pushBigInt(value);
       }
       case 'function':
       case 'symbol': {
@@ -231,8 +203,6 @@ export const encode = (input: any, options: { collapseBigNumber?: boolean } = {}
           const buf = Buffer.from(value);
           pushTypeAndLength(2, buf.length);
           pushBuffer(buf);
-        } else if (BigNumber.isBigNumber(value)) {
-          pushBigNumber(value);
         } else if (value instanceof CborTag) {
           pushTagNumber(value.tag);
           encodeItem(value.value);
@@ -247,6 +217,12 @@ export const encode = (input: any, options: { collapseBigNumber?: boolean } = {}
             throw new Error(`Invalid simple value: ${value.value}`);
           }
           pushTypeAndLength(7, value.value);
+        } else if (value._isBigNumber === true) {
+          // BigNumber support was dropped in v2; its {s,e,c} fields would otherwise
+          // be silently encoded as a map by the fallback below
+          throw new Error(
+            'Unsupported type for CBOR encoding: BigNumber (convert to a bigint, or use CborTag for decimal fractions)'
+          );
         } else if (
           // these have no own enumerable properties (or index-only ones), so the
           // map fallback below would silently corrupt them into (empty) maps
