@@ -71,6 +71,7 @@ export class CborNode {
 
   child?: CborNode; // tag payload
 
+  /** @hidden — nodes come from decodeAnnotated(), not direct construction */
   constructor(source: Buffer, kind: CborNodeKind, meta: Meta) {
     this.kind = kind;
     this.span = meta.span;
