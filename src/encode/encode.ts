@@ -1,9 +1,11 @@
 /* eslint-disable no-bitwise */
 import { Buffer } from 'buffer';
 import BigNumber from 'bignumber.js';
-import { CborTag } from '.';
-import { EncodedCbor, IndefiniteArray, IndefiniteMap } from './helpers';
-import SimpleValue from './SimpleValue';
+import CborTag from '../values/CborTag';
+import EncodedCbor from '../values/EncodedCbor';
+import IndefiniteArray from '../values/IndefiniteArray';
+import IndefiniteMap from '../values/IndefiniteMap';
+import SimpleValue from '../values/SimpleValue';
 import {
   MAX_BIG_NUM_INT,
   MAX_BIG_NUM_INT32,
@@ -11,7 +13,7 @@ import {
   POW_2_32,
   POW_2_53,
   SHIFT32,
-} from './utils';
+} from '../internal/numbers';
 
 const NAN_BUF = Buffer.from('f97e00', 'hex');
 const POS_INFINITY_BUF = Buffer.from('f97c00', 'hex');
@@ -31,7 +33,7 @@ const integerDoubleToBigNumber = (value: number): BigNumber => {
   return value < 0 ? result.negated() : result;
 };
 
-export default (input: any, options: { collapseBigNumber?: boolean } = {}): Buffer => {
+export const encode = (input: any, options: { collapseBigNumber?: boolean } = {}): Buffer => {
   const opts = { collapseBigNumber: true, ...options };
   const outBufAry: Array<Buffer> = [];
 

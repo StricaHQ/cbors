@@ -1,12 +1,35 @@
-/* eslint-disable max-classes-per-file */
 import { Buffer } from 'buffer';
-import { Spanned } from './utils';
 
-export class IndefiniteMap extends Map {}
-export class IndefiniteArray extends Array {}
-export { default as CborTag } from './CborTag';
-export { default as SimpleValue } from './SimpleValue';
-export type { ByteSpan, Spanned } from './utils';
+// [start, end) byte offsets of a decoded item within the original CBOR buffer
+export type ByteSpan = [number, number];
+
+// decoded values that carry the byte offsets of their original CBOR encoding
+export interface Spanned {
+  getByteSpan(): ByteSpan;
+}
+
+// a single shared getter avoids allocating a closure per decoded value
+// eslint-disable-next-line no-unused-vars
+function sharedGetByteSpan(this: { byteSpan: ByteSpan }): ByteSpan {
+  return this.byteSpan;
+}
+
+export const addSpanBytesToObject = <T extends object>(obj: T, span: ByteSpan): T & Spanned => {
+  Object.defineProperty(obj, 'byteSpan', {
+    value: span,
+    enumerable: false,
+    writable: true,
+    configurable: true,
+  });
+  Object.defineProperty(obj, 'getByteSpan', {
+    value: sharedGetByteSpan,
+    enumerable: false,
+    writable: true,
+    configurable: true,
+  });
+
+  return obj as T & Spanned;
+};
 
 /**
  * Whether a decoded value carries the byte span of its original encoding.
@@ -32,20 +55,3 @@ export const getCborBytes = (originalBytes: Buffer | Array<Buffer>, value: Spann
   const [start, end] = value.getByteSpan();
   return buf.subarray(start, end);
 };
-
-/**
- * Wraps an already encoded CBOR item, which the encoder splices into the
- * output verbatim instead of re-encoding it. The buffer must contain exactly
- * one well-formed CBOR data item; it is not validated.
- */
-export class EncodedCbor {
-  private cborBuffer: Buffer;
-
-  constructor(cborBuffer: Buffer) {
-    this.cborBuffer = cborBuffer;
-  }
-
-  get cborBytes(): Buffer {
-    return this.cborBuffer;
-  }
-}

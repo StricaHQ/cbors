@@ -1,15 +1,16 @@
-/* eslint-disable no-underscore-dangle */
 /* eslint-disable no-bitwise */
 
 import { Buffer } from 'buffer';
-import * as stream from 'stream';
 import BigNumber from 'bignumber.js';
-import { addSpanBytesToObject, getBigNum, POW_2_24, utf8Decoder } from './utils';
-import BufferList from './BufferList';
-import SimpleValue from './SimpleValue';
-import CborTag from './CborTag';
-import CborArray from './CborArray';
-import CborMap from './CborMap';
+import { addSpanBytesToObject } from '../span';
+import { getBigNum, POW_2_24 } from '../internal/numbers';
+import SimpleValue from '../values/SimpleValue';
+import CborTag from '../values/CborTag';
+import CborArray from '../values/CborArray';
+import CborMap from '../values/CborMap';
+
+const td = new TextDecoder('utf8', { fatal: true, ignoreBOM: true });
+const utf8Decoder = (buf: Buffer) => td.decode(buf);
 
 const bytesToBigNumber = (buf: Buffer): BigNumber => {
   if (buf.length === 0) {
@@ -51,57 +52,22 @@ export type DecoderOptions = {
   maxDepth?: number;
 };
 
-class Decoder extends stream.Transform {
-  private bl: any;
+// low-level recursive-descent reader shared by decode() and IncrementalDecoder.
+export default class Reader {
+  offset: number = 0;
 
-  private needed: number | null = null;
-
-  private fresh: boolean = true;
+  usedBytes: Array<Buffer> = [];
 
   private maxStringLength: number;
 
   private maxDepth: number;
 
-  private _parser = this.parse();
-
-  private offset: number = 0;
-
-  private usedBytes: Array<Buffer> = [];
-
   constructor(options: DecoderOptions = {}) {
-    super({
-      writableObjectMode: false,
-      readableObjectMode: true,
-    });
     this.maxStringLength = Math.min(
       options.maxStringLength ?? MAX_POSSIBLE_STRING_LENGTH,
       MAX_POSSIBLE_STRING_LENGTH
     );
     this.maxDepth = options.maxDepth ?? DEFAULT_MAX_DEPTH;
-    this.bl = new BufferList();
-    this.restart();
-  }
-
-  static decode(inputBytes: Buffer, options?: DecoderOptions): { bytes: Buffer; value: any } {
-    const decoder = new Decoder(options);
-    const bs = new BufferList();
-    bs.push(inputBytes);
-    const parser = decoder.parse();
-    let state = parser.next();
-
-    while (!state.done) {
-      // read throws 'Insufficient data' when the input is truncated
-      const b = bs.read(state.value);
-      state = parser.next(b);
-    }
-
-    if (bs.length > 0) {
-      throw new Error('Remaining Bytes');
-    }
-    return {
-      bytes: inputBytes,
-      value: state.value,
-    };
   }
 
   private readUInt64(f: number, g: number, startByte: number): number | BigNumber {
@@ -186,44 +152,7 @@ class Decoder extends stream.Transform {
     throw new Error('Invalid length encoding');
   }
 
-  _transform(fresh: any, encoding: any, cb: any) {
-    this.bl.push(fresh);
-
-    while (this.bl.length >= (this.needed as number)) {
-      let ret = null;
-      let chunk;
-
-      if (this.needed === null) {
-        chunk = undefined;
-      } else {
-        chunk = this.bl.read(this.needed);
-      }
-
-      try {
-        ret = this._parser.next(chunk);
-      } catch (e) {
-        return cb(e);
-      }
-
-      if (this.needed) {
-        this.fresh = false;
-      }
-
-      if (ret.done) {
-        this.push({
-          bytes: this.usedBytes,
-          value: ret.value,
-        });
-        this.restart();
-      } else {
-        this.needed = ret.value ?? Infinity;
-      }
-    }
-
-    return cb();
-  }
-
-  private *parse(suppliedBytes?: Buffer, depth: number = 0): Generator<number, any, Buffer> {
+  *parse(suppliedBytes?: Buffer, depth: number = 0): Generator<number, any, Buffer> {
     if (depth > this.maxDepth) {
       throw new Error('Maximum depth exceeded');
     }
@@ -483,18 +412,4 @@ class Decoder extends stream.Transform {
       }
     }
   }
-
-  private restart() {
-    this.needed = null;
-    this._parser = this.parse();
-    this.fresh = true;
-    this.offset = 0;
-    this.usedBytes = [];
-  }
-
-  _flush(cb: any) {
-    cb(this.fresh ? null : new Error('unexpected end of input'));
-  }
 }
-
-export default Decoder;

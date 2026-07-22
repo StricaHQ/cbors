@@ -3,8 +3,8 @@ import * as _ from 'lodash';
 import { BigNumber } from 'bignumber.js';
 import {
   CborTag,
-  Decoder,
-  Encoder,
+  decode,
+  encode,
   IndefiniteArray,
   IndefiniteMap,
   SimpleValue,
@@ -148,7 +148,7 @@ const tests: Array<TestCase> = [
 describe('encode/decode round trip', (): void => {
   for (const test of tests) {
     it(`Decode ${test.name}`, () => {
-      const decoded = Decoder.decode(Buffer.from(test.cbor, 'hex')).value as any;
+      const decoded = decode(Buffer.from(test.cbor, 'hex')).value as any;
       if (BigNumber.isBigNumber(decoded)) {
         expect(decoded.eq(test.value)).eq(true);
       } else if (decoded instanceof Buffer) {
@@ -172,13 +172,13 @@ describe('encode/decode round trip', (): void => {
         let encoded;
         if (test.tag) {
           if (BigNumber.isBigNumber(test.value)) {
-            encoded = Encoder.encode(test.value, { collapseBigNumber: false }).toString('hex');
+            encoded = encode(test.value, { collapseBigNumber: false }).toString('hex');
           } else {
             const value = new CborTag(test.value, test.tag);
-            encoded = Encoder.encode(value).toString('hex');
+            encoded = encode(value).toString('hex');
           }
         } else {
-          encoded = Encoder.encode(test.value).toString('hex');
+          encoded = encode(test.value).toString('hex');
         }
         expect(encoded).eq(test.cbor);
       });
@@ -186,23 +186,23 @@ describe('encode/decode round trip', (): void => {
   }
 
   it('SimpleValue round trip', () => {
-    const decoded = Decoder.decode(Buffer.from('f0', 'hex')).value;
+    const decoded = decode(Buffer.from('f0', 'hex')).value;
     expect(decoded instanceof SimpleValue).eq(true);
     expect(decoded.value).eq(16);
-    expect(Encoder.encode(decoded).toString('hex')).eq('f0');
-    expect(Encoder.encode(new SimpleValue(255)).toString('hex')).eq('f8ff');
-    expect(() => Encoder.encode(new SimpleValue(24))).to.throw('Invalid simple value');
-    expect(() => Encoder.encode(new SimpleValue(300))).to.throw('Invalid simple value');
+    expect(encode(decoded).toString('hex')).eq('f0');
+    expect(encode(new SimpleValue(255)).toString('hex')).eq('f8ff');
+    expect(() => encode(new SimpleValue(24))).to.throw('Invalid simple value');
+    expect(() => encode(new SimpleValue(300))).to.throw('Invalid simple value');
   });
 
   it('Tag numbers beyond 2^53 round trip', () => {
     const hex = 'dbffffffffffffffff00';
-    const decoded = Decoder.decode(Buffer.from(hex, 'hex')).value as CborTag;
+    const decoded = decode(Buffer.from(hex, 'hex')).value as CborTag;
     expect(BigNumber.isBigNumber(decoded.tag)).eq(true);
-    expect(Encoder.encode(decoded).toString('hex')).eq(hex);
+    expect(encode(decoded).toString('hex')).eq(hex);
     // tag numbers needing 8 bytes but below 2^53 still work
-    expect(Encoder.encode(new CborTag(0, 4294967296)).toString('hex')).eq('db000000010000000000');
-    expect(() => Encoder.encode(new CborTag(0, -1))).to.throw('Invalid tag number');
-    expect(() => Encoder.encode(new CborTag(0, 1.5))).to.throw('Invalid tag number');
+    expect(encode(new CborTag(0, 4294967296)).toString('hex')).eq('db000000010000000000');
+    expect(() => encode(new CborTag(0, -1))).to.throw('Invalid tag number');
+    expect(() => encode(new CborTag(0, 1.5))).to.throw('Invalid tag number');
   });
 });
