@@ -1,4 +1,3 @@
-/* eslint-disable no-bitwise */
 import { Buffer } from 'buffer';
 import CborTag from '../values/CborTag';
 import EncodedCbor from '../values/EncodedCbor';

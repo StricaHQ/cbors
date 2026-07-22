@@ -1,6 +1,8 @@
 export { decode } from './decode/decode';
+export { decodeAnnotated, CborNode } from './decode/tree';
+export type { CborNodeKind } from './decode/tree';
 export { default as IncrementalDecoder } from './decode/IncrementalDecoder';
-export type { DecoderOptions } from './decode/Reader';
+export type { DecoderOptions } from './decode/parse';
 
 export { encode } from './encode/encode';
 export type { EncodeOptions } from './encode/encode';
