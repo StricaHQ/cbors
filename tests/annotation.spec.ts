@@ -4,6 +4,7 @@ import { decode, decodeAnnotated, CborNode, CborTag } from '../src/index';
 
 const deepEql = _.isEqual;
 const hex = (s: string) => Buffer.from(s, 'hex');
+const toHex = (u: Uint8Array): string => Buffer.from(u).toString('hex');
 const ann = (s: string) => decodeAnnotated(hex(s));
 
 describe('decodeAnnotated', (): void => {
@@ -34,7 +35,7 @@ describe('decodeAnnotated', (): void => {
         expect(node.encoding.indefinite).eq(false);
         expect(node.span).deep.eq(l.span);
         // bytes is the exact source slice, header included
-        expect(node.bytes.toString('hex')).eq(l.cbor);
+        expect(toHex(node.bytes)).eq(l.cbor);
       });
     }
   });
@@ -43,7 +44,7 @@ describe('decodeAnnotated', (): void => {
     expect(ann('18ff').value).eq(255);
     expect(ann('1bffffffffffffffff').value).eq(18446744073709551615n);
     expect(ann('3bffffffffffffffff').value).eq(-18446744073709551616n);
-    expect((ann('4401020304').value as Buffer).toString('hex')).eq('01020304');
+    expect(toHex(ann('4401020304').value as Uint8Array)).eq('01020304');
     expect(ann('66417368697368').value).eq('Ashish');
     expect(ann('f5').value).eq(true);
     expect(ann('f4').value).eq(false);
@@ -57,18 +58,18 @@ describe('decodeAnnotated', (): void => {
     const node = ann('a26161016162820203');
     expect(node.kind).eq('map');
     expect(node.span).deep.eq([0, 9]);
-    expect(node.bytes.toString('hex')).eq('a26161016162820203');
+    expect(toHex(node.bytes)).eq('a26161016162820203');
 
     const [e0, e1] = node.entries!;
     expect(e0.key.kind).eq('text');
-    expect(e0.key.bytes.toString('hex')).eq('6161'); // "a"
-    expect(e0.value.bytes.toString('hex')).eq('01');
-    expect(e1.key.bytes.toString('hex')).eq('6162'); // "b"
+    expect(toHex(e0.key.bytes)).eq('6161'); // "a"
+    expect(toHex(e0.value.bytes)).eq('01');
+    expect(toHex(e1.key.bytes)).eq('6162'); // "b"
 
     const inner = e1.value;
     expect(inner.kind).eq('array');
-    expect(inner.bytes.toString('hex')).eq('820203');
-    expect(inner.items!.map((i) => i.bytes.toString('hex'))).deep.eq(['02', '03']);
+    expect(toHex(inner.bytes)).eq('820203');
+    expect(inner.items!.map((i) => toHex(i.bytes))).deep.eq(['02', '03']);
     expect(inner.items!.map((i) => i.span)).deep.eq([
       [7, 8],
       [8, 9],
@@ -82,7 +83,7 @@ describe('decodeAnnotated', (): void => {
     expect(node.tag).eq(102);
     expect(node.encoding.ai).eq(24);
     expect(node.child!.kind).eq('array');
-    expect(node.child!.bytes.toString('hex')).eq('82187b80');
+    expect(toHex(node.child!.bytes)).eq('82187b80');
     expect(deepEql(node.toJS(), new CborTag([123, []], 102))).eq(true);
 
     // bignum tag 2 is kept as tag syntax in the tree; toJS collapses it
@@ -111,13 +112,13 @@ describe('decodeAnnotated', (): void => {
     expect(c0.kind).eq('bytes');
     expect(c0.encoding.indefinite).eq(false);
     expect(c0.span).deep.eq([1, 4]);
-    expect(c0.bytes.toString('hex')).eq('420102'); // header + payload
-    expect((c0.value as Buffer).toString('hex')).eq('0102'); // payload only
+    expect(toHex(c0.bytes)).eq('420102'); // header + payload
+    expect(toHex(c0.value as Uint8Array)).eq('0102'); // payload only
     expect(c1.span).deep.eq([4, 8]);
-    expect(c1.bytes.toString('hex')).eq('43030405');
+    expect(toHex(c1.bytes)).eq('43030405');
 
     // joins on toJS, matching plain decode
-    expect((node.toJS() as Buffer).toString('hex')).eq('0102030405');
+    expect(toHex(node.toJS() as Uint8Array)).eq('0102030405');
     expect(deepEql(node.toJS(), decode(hex('5f42010243030405ff')))).eq(true);
   });
 
@@ -178,7 +179,7 @@ describe('decodeAnnotated', (): void => {
       expect(bigKey.at(0)).eq(undefined);
     });
 
-    it('map Buffer keys match by content', () => {
+    it('map byte-string keys match by content', () => {
       const node = ann('a14401020304182a'); // {h'01020304': 42}
       expect(node.at(hex('01020304'))!.toJS()).eq(42);
       expect(node.at(hex('01020305'))).eq(undefined);
@@ -204,7 +205,7 @@ describe('decodeAnnotated', (): void => {
 
   it('root node.bytes equals the whole input', () => {
     for (const s of ['a26161016162820203', 'd86682187b80', '5f42010243030405ff']) {
-      expect(ann(s).bytes.toString('hex')).eq(s);
+      expect(toHex(ann(s).bytes)).eq(s);
     }
   });
 

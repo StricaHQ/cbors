@@ -1,18 +1,18 @@
-import { Buffer } from 'buffer';
 import { bytesToBigInt } from '../internal/numbers';
+import { concat } from '../internal/bytes';
 import CborTag from '../values/CborTag';
 import SimpleValue from '../values/SimpleValue';
 import IndefiniteArray from '../values/IndefiniteArray';
 import IndefiniteMap from '../values/IndefiniteMap';
 import { Builder } from './parse';
 
-// builder that produces the plain decode() values (numbers, Buffers, Maps, …)
+// builder that produces the plain decode() values (numbers, Uint8Arrays, Maps, …)
 const plainBuilder: Builder<any> = {
   int(value) {
     return value;
   },
   bytes(payload) {
-    return Array.isArray(payload) ? Buffer.concat(payload) : payload;
+    return Array.isArray(payload) ? concat(payload) : payload;
   },
   text(payload) {
     return Array.isArray(payload) ? payload.join('') : payload;
@@ -33,7 +33,7 @@ const plainBuilder: Builder<any> = {
   tag(tag, child) {
     // bignum tags (RFC 8949 3.4.3) collapse to bigint: tag 2 positive, tag 3 = -1 - n
     if (tag === 2 || tag === 3) {
-      if (!Buffer.isBuffer(child)) {
+      if (!(child instanceof Uint8Array)) {
         throw new Error('Invalid bignum encoding: expected byte string');
       }
       const big = bytesToBigInt(child);

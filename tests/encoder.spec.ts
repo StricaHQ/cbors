@@ -1,9 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import * as _ from 'lodash';
-import { CborTag, decode, decodeAnnotated, encode, EncodedCbor } from '../src/index';
+import { CborTag, decode, decodeAnnotated, encode as baseEncode, EncodedCbor } from '../src/index';
 
 const deepEql = _.isEqual;
 const hex = (s: string) => Buffer.from(s, 'hex');
+const toHex = (u: Uint8Array): string => Buffer.from(u).toString('hex');
+// encode() returns a plain Uint8Array; wrap it as a Buffer so these tests can
+// keep asserting via .toString('hex') and other Buffer conveniences
+const encode = (value: any, options?: any): Buffer => Buffer.from(baseEncode(value, options));
 
 describe('encoder', (): void => {
   it('Encode integers beyond ±2^53 exactly as integers', () => {
@@ -142,8 +146,8 @@ describe('encoder', (): void => {
       const tx = decodeAnnotated(hex('84a1001817a0f5f6'));
       const bodyNode = tx.at(0)!;
       const witnessNode = tx.at(1)!;
-      expect(bodyNode.bytes.toString('hex')).eq('a1001817');
-      expect(witnessNode.bytes.toString('hex')).eq('a0');
+      expect(toHex(bodyNode.bytes)).eq('a1001817');
+      expect(toHex(witnessNode.bytes)).eq('a0');
 
       // reassemble with a fresh witness set, keeping body/isValid/auxData verbatim
       const newWitnessSet = new Map().set(1, 'sig');
@@ -158,7 +162,7 @@ describe('encoder', (): void => {
       // the body subtree is byte-identical to the input; a decode→re-encode of the
       // body would have normalized 23 to '17' and broken any hash over these bytes
       const rebuiltTx = decodeAnnotated(rebuilt);
-      expect(rebuiltTx.at(0)!.bytes.toString('hex')).eq('a1001817');
+      expect(toHex(rebuiltTx.at(0)!.bytes)).eq('a1001817');
     });
 
     it('nests spliced nodes inside arrays and maps', () => {

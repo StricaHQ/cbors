@@ -8,7 +8,7 @@
 
 CBOR ([RFC 8949](https://www.rfc-editor.org/rfc/rfc8949)) encoder and decoder for JavaScript. It keeps an annotation tree on decode so you can recover the exact original bytes of any decoded item instead of re-encoding it. That matters on Cardano, where hashes are taken over the original bytes.
 
-> **v2** is ESM-only and needs Node >= 22.12. `Encoder.encode`/`Decoder.decode` become the top-level `encode`/`decode`, and big integers are native `bigint` instead of `bignumber.js`. See [Migrating from v1](#migrating-from-v1).
+> **v2** is ESM-only and needs Node >= 22.12. `Encoder.encode`/`Decoder.decode` become the top-level `encode`/`decode`, big integers are native `bigint` instead of `bignumber.js`, and bytes are `Uint8Array` instead of `Buffer`. See [Migrating from v1](#migrating-from-v1).
 
 ## Installation
 
@@ -26,6 +26,8 @@ yarn add @stricahq/cbors
 // access the cbors global variable
 ```
 
+cbors has no dependencies and uses no Node.js builtins, so bundlers need no polyfills or aliases for it.
+
 For v1, pin the major version:
 
 ```html
@@ -42,6 +44,8 @@ const value = decode(bytes); // Map(1) { 0 => [ 1, 2 ] }
 ```
 
 `decode` returns the value directly. Integers outside ±2^53 and bignum tags (2/3) decode to `bigint`, and `encode` takes `bigint` natively. Indefinite-length arrays and maps decode to `IndefiniteArray` / `IndefiniteMap`, so indefiniteness survives a decode/encode round trip.
+
+Everything is `Uint8Array`: what `encode` gives you, what byte strings decode to, what `node.bytes` points at. Node's `Buffer` is a `Uint8Array`, so passing one in still works.
 
 For more examples, the [tests](https://github.com/StricaHQ/cbors/tree/master/tests) cover every supported data type.
 
@@ -66,43 +70,34 @@ const txId = blake2b256(bodyBytes); // any hash function
 
 Navigating a `CborNode`:
 
-- `node.at(k)` — array index, or the value of the first map entry whose key matches `k` (a number/bigint cross-match, a string, a bool, or a Buffer matched by content). Returns a `CborNode` or `undefined`.
+- `node.at(k)` — array index, or the value of the first map entry whose key matches `k` (a number/bigint cross-match, a string, a bool, or a `Uint8Array` matched by content). Returns a `CborNode` or `undefined`.
 - `node.bytes` — the exact source bytes for this item, header included.
 - `node.toJS()` — the plain `decode()` value for this subtree (joins indefinite chunks, collapses bignum tags, last-wins for duplicate keys).
 - `node.items` holds array children; `node.entries` holds map entries preserving order **and** duplicate keys; `node.chunks` holds the pieces of an indefinite byte/text string.
 
 `decodeAnnotated` is one-shot only: spans are offsets into a single contiguous buffer.
 
-### EncodedCbor and byte-exact editing and CIP 30
+### EncodedCbor and byte-exact editing
 
-Sometimes you already hold a piece of valid CBOR as raw bytes and just need to nest it inside a larger value. Decoding it only to re-encode it can change those bytes, and different bytes mean a different hash or a broken signature. `EncodedCbor` wraps such a buffer and the encoder splices it into the output as-is instead of re-encoding it:
+Sometimes you already hold a piece of valid CBOR as raw bytes and just need to nest it inside a larger value. Decoding it only to re-encode it can change those bytes, and different bytes mean a different hash or a broken signature. `EncodedCbor` wraps such a buffer and the encoder splices it into the output as-is instead of re-encoding it.
 
-```js
-import { encode, EncodedCbor } from "@stricahq/cbors";
-
-const witnessSet = Buffer.from(await api.signTx(txHex, true), "hex");
-const signedTx = encode([
-  new EncodedCbor(bodyBytes),
-  new EncodedCbor(witnessSet),
-  true,
-  null,
-]);
-```
-
-The buffer can come from anywhere, a wallet or a slice of the annotation tree. Pairing `EncodedCbor` with `node.bytes` gives you byte-exact editing: decode a transaction, then rebuild it with one subtree replaced while every untouched subtree keeps its original bytes.
+The buffer can come from anywhere, a wallet or a slice of the annotation tree. Pairing `EncodedCbor` with `node.bytes` gives you byte-exact editing: decode a transaction, then rebuild it with one subtree replaced while every untouched subtree keeps its original bytes. Attaching a CIP-30 witness set is exactly that:
 
 ```js
 import { decodeAnnotated, encode, EncodedCbor } from "@stricahq/cbors";
 
 const tx = decodeAnnotated(txBytes);
-const witnessSet = Buffer.from(await api.signTx(txHex, true), "hex");
+const witnessSet = await api.signTx(txHex, true); // CIP-30, hex string
+
 const signedTx = encode([
-  new EncodedCbor(tx.at(0).bytes),  // body — spliced byte-for-byte, its hash unchanged
-  new EncodedCbor(witnessSet),      // fresh witness set from the wallet
-  true,                             // isValid
-  null,                             // auxiliaryData
+  new EncodedCbor(tx.at(0).bytes),           // body — spliced byte-for-byte, its hash unchanged
+  new EncodedCbor(toBytes(witnessSet)),      // fresh witness set from the wallet
+  true,                                      // isValid
+  null,                                      // auxiliaryData
 ]);
 ```
+
+cbors ships no hex helper of its own. Anything that produces a `Uint8Array` works: `Buffer.from(hex, "hex")` on Node, `Uint8Array.fromHex(hex)` on runtimes that have it, or whichever hex utility your project already uses.
 
 ## Streaming
 
@@ -167,6 +162,8 @@ createReadStream("stream.cbor")
 | BigNumber (via `bignumber.js`) | native `bigint` (BigNumber inputs now throw) |
 | `collapseBigNumber` encode option | `collapseBigInt` |
 | decimal fractions via BigNumber | `new CborTag([exponent, mantissa], 4)` |
+| `Buffer` in and out | `Uint8Array` out; `Buffer` still accepted as input |
+| `buffer` polyfill for browsers | no dependencies, no Node.js builtins |
 | CJS + ESM dual package | ESM only, `require(esm)` on Node >= 22.12 |
 
 ## API Doc

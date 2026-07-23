@@ -1,7 +1,5 @@
-import { Buffer } from 'buffer';
-
 export default class BufferList {
-  private chunks: Array<Buffer> = [];
+  private chunks: Array<Uint8Array> = [];
 
   // consumed bytes within chunks[0]
   private offset: number = 0;
@@ -12,9 +10,9 @@ export default class BufferList {
     return this.totalLength;
   }
 
-  read(n: number): Buffer {
+  read(n: number): Uint8Array {
     if (n === 0) {
-      return Buffer.alloc(0);
+      return new Uint8Array(0);
     }
     if (n < 0) {
       throw new Error('invalid length');
@@ -24,7 +22,7 @@ export default class BufferList {
     }
 
     const first = this.chunks[0];
-    let out: Buffer;
+    let out: Uint8Array;
     if (first.length - this.offset >= n) {
       out = first.subarray(this.offset, this.offset + n);
       this.offset += n;
@@ -33,12 +31,12 @@ export default class BufferList {
         this.offset = 0;
       }
     } else {
-      out = Buffer.allocUnsafe(n);
+      out = new Uint8Array(n);
       let copied = 0;
       while (copied < n) {
         const chunk = this.chunks[0];
         const take = Math.min(chunk.length - this.offset, n - copied);
-        chunk.copy(out, copied, this.offset, this.offset + take);
+        out.set(chunk.subarray(this.offset, this.offset + take), copied);
         copied += take;
         this.offset += take;
         if (this.offset === chunk.length) {
@@ -51,7 +49,7 @@ export default class BufferList {
     return out;
   }
 
-  push(chunk: Buffer): void {
+  push(chunk: Uint8Array): void {
     if (!chunk.length) return;
     this.chunks.push(chunk);
     this.totalLength += chunk.length;

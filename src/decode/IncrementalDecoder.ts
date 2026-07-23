@@ -1,7 +1,7 @@
-import { Buffer } from 'buffer';
 import BufferList from '../internal/BufferList';
 import Parser, { DecoderOptions } from './parse';
 import plainBuilder from './decodePlain';
+import { concat } from '../internal/bytes';
 
 // dependency-free replacement for the v1 stream.Transform decoder. Push buffer
 // chunks as they arrive; each push returns the top-level items completed so far.
@@ -16,7 +16,7 @@ export default class IncrementalDecoder {
 
   private parser: Parser<any>;
 
-  private gen: Generator<number, any, Buffer>;
+  private gen: Generator<number, any, Uint8Array>;
 
   constructor(options: DecoderOptions = {}) {
     this.options = options;
@@ -24,19 +24,19 @@ export default class IncrementalDecoder {
     this.gen = this.parser.parse();
   }
 
-  push(chunk: Buffer): Array<{ value: any; bytes: Buffer }> {
+  push(chunk: Uint8Array): Array<{ value: any; bytes: Uint8Array }> {
     this.bl.push(chunk);
-    const completed: Array<{ value: any; bytes: Buffer }> = [];
+    const completed: Array<{ value: any; bytes: Uint8Array }> = [];
 
     while (this.bl.length >= (this.needed ?? 0)) {
-      let inBytes: Buffer | undefined;
+      let inBytes: Uint8Array | undefined;
       if (this.needed === null) {
         inBytes = undefined;
       } else {
         inBytes = this.bl.read(this.needed);
       }
 
-      const ret = this.gen.next(inBytes as Buffer);
+      const ret = this.gen.next(inBytes as Uint8Array);
 
       if (this.needed) {
         this.fresh = false;
@@ -45,7 +45,7 @@ export default class IncrementalDecoder {
       if (ret.done) {
         completed.push({
           value: ret.value,
-          bytes: Buffer.concat(this.parser.usedBytes),
+          bytes: concat(this.parser.usedBytes),
         });
         this.restart();
       } else {

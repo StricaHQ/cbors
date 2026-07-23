@@ -1,10 +1,9 @@
-import { Buffer } from 'buffer';
 import BufferList from '../internal/BufferList';
 import Parser, { DecoderOptions } from './parse';
 import plainBuilder from './decodePlain';
 
 // decode a single, complete CBOR item from a contiguous buffer.
-export const decode = (inputBytes: Buffer, options?: DecoderOptions): any => {
+export const decode = (inputBytes: Uint8Array, options?: DecoderOptions): any => {
   const parser = new Parser(plainBuilder, options);
   const bs = new BufferList();
   bs.push(inputBytes);

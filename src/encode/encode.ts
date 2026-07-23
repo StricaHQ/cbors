@@ -1,15 +1,18 @@
-import { Buffer } from 'buffer';
 import CborTag from '../values/CborTag';
 import EncodedCbor from '../values/EncodedCbor';
 import IndefiniteArray from '../values/IndefiniteArray';
 import IndefiniteMap from '../values/IndefiniteMap';
 import SimpleValue from '../values/SimpleValue';
+import { concat } from '../internal/bytes';
 import { POW_2_32, POW_2_53 } from '../internal/numbers';
 
-const NAN_BUF = Buffer.from('f97e00', 'hex');
-const POS_INFINITY_BUF = Buffer.from('f97c00', 'hex');
-const NEG_INFINITY_BUF = Buffer.from('f9fc00', 'hex');
-const BREAK = Buffer.from('ff', 'hex');
+const NAN_BUF = Uint8Array.of(0xf9, 0x7e, 0x00);
+const POS_INFINITY_BUF = Uint8Array.of(0xf9, 0x7c, 0x00);
+const NEG_INFINITY_BUF = Uint8Array.of(0xf9, 0xfc, 0x00);
+const NEG_ZERO_BUF = Uint8Array.of(0xf9, 0x80, 0x00);
+const BREAK = Uint8Array.of(0xff);
+
+const utf8Encoder = new TextEncoder();
 
 const MAX_U64 = 0xffffffffffffffffn;
 
@@ -19,39 +22,38 @@ export type EncodeOptions = {
   collapseBigInt?: boolean;
 };
 
-export const encode = (input: any, options: EncodeOptions = {}): Buffer => {
+export const encode = (input: any, options: EncodeOptions = {}): Uint8Array => {
   const opts = { collapseBigInt: true, ...options };
-  const outBufAry: Array<Buffer> = [];
+  const outBufAry: Array<Uint8Array> = [];
 
   function pushFloat64(value: number) {
-    const buf = Buffer.allocUnsafe(8);
-    buf.writeDoubleBE(value);
+    const buf = new Uint8Array(8);
+    new DataView(buf.buffer).setFloat64(0, value);
     outBufAry.push(buf);
   }
   function pushUInt8(value: number) {
-    const buf = Buffer.allocUnsafe(1);
-    buf.writeUInt8(value, 0);
-    outBufAry.push(buf);
+    outBufAry.push(Uint8Array.of(value & 0xff));
   }
-  function pushBuffer(value: Buffer) {
+  function pushBuffer(value: Uint8Array) {
     outBufAry.push(value);
   }
   function pushUInt16(value: number) {
-    const buf = Buffer.allocUnsafe(2);
-    buf.writeUInt16BE(value, 0);
+    const buf = new Uint8Array(2);
+    new DataView(buf.buffer).setUint16(0, value);
     outBufAry.push(buf);
   }
   function pushUInt32(value: number) {
-    const buf = Buffer.allocUnsafe(4);
-    buf.writeUInt32BE(value, 0);
+    const buf = new Uint8Array(4);
+    new DataView(buf.buffer).setUint32(0, value);
     outBufAry.push(buf);
   }
   function pushUInt64(value: number) {
     const low = value % POW_2_32;
     const high = (value - low) / POW_2_32;
-    const buf = Buffer.allocUnsafe(8);
-    buf.writeUInt32BE(high, 0);
-    buf.writeUInt32BE(low, 4);
+    const buf = new Uint8Array(8);
+    const dv = new DataView(buf.buffer);
+    dv.setUint32(0, high);
+    dv.setUint32(4, low);
     outBufAry.push(buf);
   }
   function pushTypeAndLength(type: number, length: number) {
@@ -102,6 +104,20 @@ export const encode = (input: any, options: EncodeOptions = {}): Buffer => {
     }
     return pushTypeAndLength(6, tag);
   }
+  // big-endian magnitude bytes of a non-negative bigint (empty magnitude → 0x00)
+  function bigIntToBytes(v: bigint): Uint8Array {
+    if (v === 0n) {
+      return Uint8Array.of(0);
+    }
+    const bytes: number[] = [];
+    let n = v;
+    while (n > 0n) {
+      bytes.push(Number(n & 0xffn));
+      n >>= 8n;
+    }
+    bytes.reverse();
+    return Uint8Array.from(bytes);
+  }
   function pushBigInt(value: bigint) {
     let v = value;
     let type = 0;
@@ -116,21 +132,17 @@ export const encode = (input: any, options: EncodeOptions = {}): Buffer => {
     if (opts.collapseBigInt && v <= MAX_U64) {
       pushUintHead(type, v);
     } else {
-      let str = v.toString(16);
-      if (str.length % 2) {
-        str = `0${str}`;
-      }
+      const buf = bigIntToBytes(v);
       // push tag
       pushTypeAndLength(6, tag);
       // push buffer
-      const buf = Buffer.from(str, 'hex');
       pushTypeAndLength(2, buf.length);
       pushBuffer(buf);
     }
   }
   function pushIntNum(value: number) {
     if (Object.is(value, -0)) {
-      return pushBuffer(Buffer.from('f98000', 'hex'));
+      return pushBuffer(NEG_ZERO_BUF);
     }
     if (value >= 0 && value <= POW_2_53) {
       return pushTypeAndLength(0, value);
@@ -161,7 +173,7 @@ export const encode = (input: any, options: EncodeOptions = {}): Buffer => {
         return pushFloat64(value);
       }
       case 'string': {
-        const strBuff = Buffer.from(value, 'utf8');
+        const strBuff = utf8Encoder.encode(value);
         pushTypeAndLength(3, strBuff.length);
         return pushBuffer(strBuff);
       }
@@ -187,19 +199,15 @@ export const encode = (input: any, options: EncodeOptions = {}): Buffer => {
           }
         } else if (value instanceof EncodedCbor) {
           pushBuffer(value.cborBytes);
-        } else if (value instanceof Buffer) {
+        } else if (value instanceof Uint8Array) {
           pushTypeAndLength(2, value.length);
           pushBuffer(value);
         } else if (value instanceof ArrayBuffer) {
-          const buf = Buffer.from(value);
+          const buf = new Uint8Array(value);
           pushTypeAndLength(2, buf.length);
           pushBuffer(buf);
         } else if (value instanceof Uint8ClampedArray) {
-          const buf = Buffer.from(value);
-          pushTypeAndLength(2, buf.length);
-          pushBuffer(buf);
-        } else if (value instanceof Uint8Array) {
-          const buf = Buffer.from(value);
+          const buf = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
           pushTypeAndLength(2, buf.length);
           pushBuffer(buf);
         } else if (value instanceof CborTag) {
@@ -265,5 +273,5 @@ export const encode = (input: any, options: EncodeOptions = {}): Buffer => {
   }
 
   encodeItem(input);
-  return Buffer.concat(outBufAry);
+  return concat(outBufAry);
 };

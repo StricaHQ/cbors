@@ -5,7 +5,7 @@ export default defineConfig([
     entry: { index: 'src/index.ts' },
     format: ['esm'],
     target: 'es2022',
-    platform: 'node',
+    platform: 'neutral',
     dts: true,
     splitting: false,
   },
@@ -19,8 +19,5 @@ export default defineConfig([
     minify: true,
     noExternal: [/.*/],
     outExtension: () => ({ js: '.min.js' }),
-    esbuildOptions(options) {
-      options.define = { ...options.define, global: 'globalThis' };
-    },
   },
 ]);

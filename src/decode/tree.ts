@@ -1,7 +1,7 @@
-import { Buffer } from 'buffer';
 import BufferList from '../internal/BufferList';
 import Parser, { Builder, DecoderOptions, Meta } from './parse';
 import { bytesToBigInt } from '../internal/numbers';
+import { bytesEqual, concat } from '../internal/bytes';
 import CborTag from '../values/CborTag';
 import SimpleValue from '../values/SimpleValue';
 import IndefiniteArray from '../values/IndefiniteArray';
@@ -24,19 +24,22 @@ export type CborNodeKind =
 
 // each node holds a reference to the source buffer off the enumerable surface,
 // so nodes stay clean for inspection/comparison while bytes stays zero-copy
-const SOURCES = new WeakMap<CborNode, Buffer>();
+const SOURCES = new WeakMap<CborNode, Uint8Array>();
 
 // does the map key node match lookup key k? int keys cross-match number/bigint;
-// Buffer keys match by content.
-const keyMatches = (keyNode: CborNode, k: number | bigint | string | boolean | Buffer): boolean => {
+// byte-string keys match by content.
+const keyMatches = (
+  keyNode: CborNode,
+  k: number | bigint | string | boolean | Uint8Array
+): boolean => {
   if (typeof k === 'boolean') {
     return keyNode.kind === 'bool' && keyNode.value === k;
   }
   if (typeof k === 'string') {
     return keyNode.kind === 'text' && keyNode.toJS() === k;
   }
-  if (Buffer.isBuffer(k)) {
-    return keyNode.kind === 'bytes' && (keyNode.toJS() as Buffer).equals(k);
+  if (k instanceof Uint8Array) {
+    return keyNode.kind === 'bytes' && bytesEqual(keyNode.toJS() as Uint8Array, k);
   }
   // number | bigint
   if (keyNode.kind === 'uint' || keyNode.kind === 'nint') {
@@ -59,7 +62,7 @@ export class CborNode {
 
   encoding: { ai: number; indefinite: boolean }; // ai = additional info of head byte
 
-  value?: number | bigint | string | boolean | Buffer; // leaves (definite bytes/text incl.)
+  value?: number | bigint | string | boolean | Uint8Array; // leaves (definite bytes/text incl.)
 
   items?: CborNode[]; // array
 
@@ -72,7 +75,7 @@ export class CborNode {
   child?: CborNode; // tag payload
 
   /** @hidden — nodes come from decodeAnnotated(), not direct construction */
-  constructor(source: Buffer, kind: CborNodeKind, meta: Meta) {
+  constructor(source: Uint8Array, kind: CborNodeKind, meta: Meta) {
     this.kind = kind;
     this.span = meta.span;
     this.encoding = { ai: meta.ai, indefinite: meta.indefinite };
@@ -80,7 +83,7 @@ export class CborNode {
   }
 
   // zero-copy subarray of the source buffer, header included
-  get bytes(): Buffer {
+  get bytes(): Uint8Array {
     return SOURCES.get(this)!.subarray(this.span[0], this.span[1]);
   }
 
@@ -101,8 +104,8 @@ export class CborNode {
         return new SimpleValue(this.value as number);
       case 'bytes':
         return this.chunks
-          ? Buffer.concat(this.chunks.map((c) => c.value as Buffer))
-          : (this.value as Buffer);
+          ? concat(this.chunks.map((c) => c.value as Uint8Array))
+          : (this.value as Uint8Array);
       case 'text':
         return this.chunks
           ? this.chunks.map((c) => c.value as string).join('')
@@ -120,7 +123,7 @@ export class CborNode {
       case 'tag': {
         const child = this.child!.toJS();
         if (this.tag === 2 || this.tag === 3) {
-          if (!Buffer.isBuffer(child)) {
+          if (!(child instanceof Uint8Array)) {
             throw new Error('Invalid bignum encoding: expected byte string');
           }
           const big = bytesToBigInt(child);
@@ -134,7 +137,7 @@ export class CborNode {
   }
 
   // array: item at index. map: value of the first entry whose key matches.
-  at(k: number | bigint | string | boolean | Buffer): CborNode | undefined {
+  at(k: number | bigint | string | boolean | Uint8Array): CborNode | undefined {
     if (this.kind === 'array') {
       return typeof k === 'number' ? this.items![k] : undefined;
     }
@@ -146,7 +149,7 @@ export class CborNode {
 }
 
 // builds a CborNode tree, anchoring every node to the one source buffer
-const treeBuilder = (source: Buffer): Builder<CborNode> => ({
+const treeBuilder = (source: Uint8Array): Builder<CborNode> => ({
   int(value, meta) {
     const node = new CborNode(source, value < 0 ? 'nint' : 'uint', meta);
     node.value = value;
@@ -201,7 +204,7 @@ const treeBuilder = (source: Buffer): Builder<CborNode> => ({
 
 // decode a single CBOR item into an annotation tree. One-shot only: spans are
 // offsets into this one contiguous buffer.
-export const decodeAnnotated = (inputBytes: Buffer, options?: DecoderOptions): CborNode => {
+export const decodeAnnotated = (inputBytes: Uint8Array, options?: DecoderOptions): CborNode => {
   const parser = new Parser(treeBuilder(inputBytes), options);
   const bs = new BufferList();
   bs.push(inputBytes);

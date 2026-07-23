@@ -33,7 +33,7 @@
   "scripts": {
     "docs": "rm -rf docs && typedoc",
     "build": "rm -rf dist && tsup",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.src.json --noEmit",
     "lint": "eslint 'src/**/*.ts'",
     "lint:fix": "eslint --fix 'src/**/*.ts'",
     "prepack": "yarn build",
@@ -42,9 +42,6 @@
   },
   "author": "Strica",
   "license": "Apache-2.0",
-  "dependencies": {
-    "buffer": "^6.0.3"
-  },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@types/lodash": "^4.17.16",

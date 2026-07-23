@@ -14,7 +14,7 @@ describe('IncrementalDecoder', (): void => {
     const item = Buffer.concat([Buffer.from('5a00100000', 'hex'), payload]);
     const decoder = new IncrementalDecoder();
 
-    const items: Array<{ value: any; bytes: Buffer }> = [];
+    const items: Array<{ value: any; bytes: Uint8Array }> = [];
     for (let off = 0; off < item.length; off += 2048) {
       items.push(...decoder.push(item.subarray(off, off + 2048)));
     }
@@ -22,10 +22,10 @@ describe('IncrementalDecoder', (): void => {
 
     expect(items.length).eq(1);
     const [data] = items;
-    expect(Buffer.isBuffer(data.value)).eq(true);
+    expect(data.value instanceof Uint8Array).eq(true);
     expect(data.value.length).eq(payload.length);
-    expect(data.value.equals(payload)).eq(true);
-    expect(data.bytes.equals(item)).eq(true);
+    expect(Buffer.from(data.value).equals(payload)).eq(true);
+    expect(Buffer.from(data.bytes).equals(item)).eq(true);
   });
 
   it('Decodes multiple items across pushes, including zero-length bytes and string', () => {
@@ -37,7 +37,7 @@ describe('IncrementalDecoder', (): void => {
     decoder.end();
 
     expect(results.length).eq(3);
-    expect(Buffer.isBuffer(results[0].value)).eq(true);
+    expect(results[0].value instanceof Uint8Array).eq(true);
     expect(results[0].value.length).eq(0);
     expect(results[1].value).eq('');
     expect(results[2].value).eq(1);

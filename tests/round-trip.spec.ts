@@ -3,13 +3,16 @@ import * as _ from 'lodash';
 import {
   CborTag,
   decode,
-  encode,
+  encode as baseEncode,
   IndefiniteArray,
   IndefiniteMap,
   SimpleValue,
 } from '../src/index';
 
 const deepEql = _.isEqual;
+// encode() returns a plain Uint8Array; wrap it as a Buffer so these tests can
+// keep asserting via .toString('hex')
+const encode = (value: any, options?: any): Buffer => Buffer.from(baseEncode(value, options));
 
 const emptyIndefiniteArray = new IndefiniteArray();
 const indefiniteArray = new IndefiniteArray();
@@ -100,8 +103,8 @@ describe('encode/decode round trip', (): void => {
       const decoded = decode(Buffer.from(test.cbor, 'hex')) as any;
       if (typeof test.value === 'bigint') {
         expect(decoded).eq(test.value);
-      } else if (decoded instanceof Buffer) {
-        expect(decoded.compare(test.value)).eq(0);
+      } else if (decoded instanceof Uint8Array) {
+        expect(Buffer.from(decoded).equals(test.value)).eq(true);
       } else if (test.tag) {
         expect((decoded as CborTag).tag).eq(test.tag);
         expect(deepEql((decoded as CborTag).value, test.value)).eq(true);

@@ -1,18 +1,16 @@
-import { Buffer } from 'buffer';
-
 /**
  * Wraps an already encoded CBOR item, which the encoder splices into the
- * output verbatim instead of re-encoding it. The buffer must contain exactly
+ * output verbatim instead of re-encoding it. The bytes must contain exactly
  * one well-formed CBOR data item; it is not validated.
  */
 export default class EncodedCbor {
-  private cborBuffer: Buffer;
+  private cborBuffer: Uint8Array;
 
-  constructor(cborBuffer: Buffer) {
+  constructor(cborBuffer: Uint8Array) {
     this.cborBuffer = cborBuffer;
   }
 
-  get cborBytes(): Buffer {
+  get cborBytes(): Uint8Array {
     return this.cborBuffer;
   }
 }

@@ -1,10 +1,18 @@
-import { Buffer } from 'buffer';
-import { getBigNum, POW_2_24 } from '../internal/numbers';
+import {
+  getBigNum,
+  POW_2_24,
+  readUInt8,
+  readUInt16BE,
+  readUInt32BE,
+  readFloat32BE,
+  readFloat64BE,
+} from '../internal/numbers';
 import { ByteSpan } from '../span';
 
 const td = new TextDecoder('utf8', { fatal: true, ignoreBOM: true });
-const utf8Decoder = (buf: Buffer): string => td.decode(buf);
+const utf8Decoder = (buf: Uint8Array): string => td.decode(buf);
 
+const f16Scratch = new DataView(new ArrayBuffer(4));
 const readFloat16 = (value: number): number => {
   const sign = value & 0x8000;
   let exponent = value & 0x7c00;
@@ -14,12 +22,11 @@ const readFloat16 = (value: number): number => {
   else if (exponent !== 0) exponent += (127 - 15) << 10;
   else if (fraction !== 0) return (sign ? -1 : 1) * fraction * POW_2_24;
 
-  const buf = Buffer.alloc(4);
-  buf.writeUInt32BE(((sign << 16) | (exponent << 13) | (fraction << 13)) >>> 0);
-  return buf.readFloatBE(0);
+  f16Scratch.setUint32(0, ((sign << 16) | (exponent << 13) | (fraction << 13)) >>> 0);
+  return f16Scratch.getFloat32(0);
 };
 
-// a single Buffer can never exceed 2^32 - 1 bytes, so any string/bytes item
+// a single byte string can never exceed 2^32 - 1 bytes, so any string/bytes item
 // declaring a larger length can never be decoded
 const MAX_POSSIBLE_STRING_LENGTH = 4294967295;
 const DEFAULT_MAX_DEPTH = 1024;
@@ -41,7 +48,7 @@ export type Meta = { span: ByteSpan; ai: number; indefinite: boolean };
 // bytes — everything they need is in the value/Meta they receive.
 export interface Builder<V> {
   int(value: number | bigint, meta: Meta): V;
-  bytes(payload: Buffer | V[], meta: Meta): V; // V[] = chunk nodes when indefinite
+  bytes(payload: Uint8Array | V[], meta: Meta): V; // V[] = chunk nodes when indefinite
   text(payload: string | V[], meta: Meta): V; // V[] = chunk nodes when indefinite
   array(items: V[], meta: Meta): V;
   map(entries: Array<[V, V]>, meta: Meta): V; // duplicate keys reach the builder
@@ -56,7 +63,7 @@ export interface Builder<V> {
 export default class Parser<V> {
   // every consumed chunk, in order — IncrementalDecoder concatenates these for
   // the raw bytes of each completed top-level item
-  usedBytes: Array<Buffer> = [];
+  usedBytes: Array<Uint8Array> = [];
 
   // running byte offset; for a one-shot contiguous buffer this equals the
   // absolute offset into the source, which is what the tree spans record
@@ -77,7 +84,7 @@ export default class Parser<V> {
     this.maxDepth = options.maxDepth ?? DEFAULT_MAX_DEPTH;
   }
 
-  private consume(bytes: Buffer): Buffer {
+  private consume(bytes: Uint8Array): Uint8Array {
     this.usedBytes.push(bytes);
     this.pos += bytes.length;
     return bytes;
@@ -90,22 +97,22 @@ export default class Parser<V> {
     return length;
   }
 
-  private *readLength(ai: number): Generator<number, number | bigint, Buffer> {
+  private *readLength(ai: number): Generator<number, number | bigint, Uint8Array> {
     if (ai < 24) {
       return ai;
     }
     if (ai === 24) {
-      return this.consume(yield 1).readUInt8(0);
+      return readUInt8(this.consume(yield 1));
     }
     if (ai === 25) {
-      return this.consume(yield 2).readUInt16BE(0);
+      return readUInt16BE(this.consume(yield 2));
     }
     if (ai === 26) {
-      return this.consume(yield 4).readUInt32BE(0);
+      return readUInt32BE(this.consume(yield 4));
     }
     if (ai === 27) {
-      const f = this.consume(yield 4).readUInt32BE(0);
-      const g = this.consume(yield 4).readUInt32BE(0);
+      const f = readUInt32BE(this.consume(yield 4));
+      const g = readUInt32BE(this.consume(yield 4));
       return getBigNum(f, g);
     }
     if (ai === 31) {
@@ -118,9 +125,9 @@ export default class Parser<V> {
   // break marker, otherwise the (definite) chunk length and its head-byte ai.
   private *readChunkHead(
     majorType: number
-  ): Generator<number, { length: number; ai: number } | null, Buffer> {
+  ): Generator<number, { length: number; ai: number } | null, Uint8Array> {
     const head = this.consume(yield 1);
-    const n = head.readUInt8(0);
+    const n = readUInt8(head);
     if (n === 0xff) {
       return null;
     }
@@ -138,13 +145,13 @@ export default class Parser<V> {
     return { span: [start, this.pos], ai, indefinite };
   }
 
-  *parse(suppliedBytes?: Buffer, depth: number = 0): Generator<number, V, Buffer> {
+  *parse(suppliedBytes?: Uint8Array, depth: number = 0): Generator<number, V, Uint8Array> {
     if (depth > this.maxDepth) {
       throw new Error('Maximum depth exceeded');
     }
 
     let start: number;
-    let head: Buffer;
+    let head: Uint8Array;
     if (suppliedBytes) {
       // the caller already read (and tracked) this head byte while looking for a
       // break marker, so pos is already past it
@@ -155,21 +162,21 @@ export default class Parser<V> {
       head = this.consume(yield 1);
     }
 
-    const value = head.readUInt8(0);
+    const value = readUInt8(head);
     const majorType = value >> 5;
     const ai = value & 0x1f;
 
     if (majorType === 7) {
       if (ai === 25) {
-        const n = this.consume(yield 2).readUInt16BE(0);
+        const n = readUInt16BE(this.consume(yield 2));
         return this.builder.float(readFloat16(n), this.meta(start, ai, false));
       }
       if (ai === 26) {
-        const n = this.consume(yield 4).readFloatBE(0);
+        const n = readFloat32BE(this.consume(yield 4));
         return this.builder.float(n, this.meta(start, ai, false));
       }
       if (ai === 27) {
-        const n = this.consume(yield 8).readDoubleBE(0);
+        const n = readFloat64BE(this.consume(yield 8));
         return this.builder.float(n, this.meta(start, ai, false));
       }
     }
@@ -236,7 +243,7 @@ export default class Parser<V> {
         if (indefinite) {
           for (;;) {
             const b = this.consume(yield 1);
-            if (b.readUInt8(0) === 0xff) break;
+            if (readUInt8(b) === 0xff) break;
             items.push(yield* this.parse(b, depth + 1));
           }
         } else {
@@ -253,7 +260,7 @@ export default class Parser<V> {
         if (indefinite) {
           for (;;) {
             const b = this.consume(yield 1);
-            if (b.readUInt8(0) === 0xff) break;
+            if (readUInt8(b) === 0xff) break;
             const key = yield* this.parse(b, depth + 1);
             const val = yield* this.parse(undefined, depth + 1);
             entries.push([key, val]);
