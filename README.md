@@ -5,7 +5,10 @@
 </p>
 
 # @stricahq/cbors
-CBOR ([RFC 7049](http://tools.ietf.org/html/rfc7049)) encoder and decoder for javascript data types, with streaming support. Built with Cardano in mind, where you often need the exact original bytes of a decoded item rather than a re-encoding of it.
+
+CBOR ([RFC 8949](https://www.rfc-editor.org/rfc/rfc8949)) encoder and decoder for JavaScript. It keeps an annotation tree on decode so you can recover the exact original bytes of any decoded item instead of re-encoding it. That matters on Cardano, where hashes are taken over the original bytes.
+
+> **v2** is ESM-only and needs Node >= 22.12. `Encoder.encode`/`Decoder.decode` become the top-level `encode`/`decode`, and big integers are native `bigint` instead of `bignumber.js`. See [Migrating from v1](#migrating-from-v1).
 
 ## Installation
 
@@ -20,49 +23,65 @@ yarn add @stricahq/cbors
 ```html
 <script src="https://cdn.jsdelivr.net/npm/@stricahq/cbors/dist/index.min.js"></script>
 
-// access cbors global variable
+// access the cbors global variable
+```
+
+For v1, pin the major version:
+
+```html
+<script src="https://cdn.jsdelivr.net/npm/@stricahq/cbors@1/dist/index.min.js"></script>
 ```
 
 ## Usage
 
 ```js
-import { Encoder, Decoder } from "@stricahq/cbors";
+import { encode, decode } from "@stricahq/cbors";
 
-const encoded = Encoder.encode(new Map().set(0, [1, 2]));
-const { value } = Decoder.decode(encoded);
+const bytes = encode(new Map().set(0, [1, 2]));
+const value = decode(bytes); // Map(1) { 0 => [ 1, 2 ] }
 ```
 
-The examples in this readme are kept short, the [tests](https://github.com/StricaHQ/cbors/tree/master/tests) cover all supported data types and are the best place to look for more.
+`decode` returns the value directly. Integers outside ±2^53 and bignum tags (2/3) decode to `bigint`, and `encode` takes `bigint` natively. Indefinite-length arrays and maps decode to `IndefiniteArray` / `IndefiniteMap`, so indefiniteness survives a decode/encode round trip.
+
+For more examples, the [tests](https://github.com/StricaHQ/cbors/tree/master/tests) cover every supported data type.
 
 ## Cardano
 
-Everything on Cardano is hashed and signed over exact CBOR bytes. Decode a transaction and encode it again and there is no guarantee you get the same bytes back, and different bytes mean a different hash. cbors deals with this in two ways: byte spans on decoded values, and `EncodedCbor` on the encoding side.
+On Cardano everything is hashed and signed over exact CBOR bytes. Decode a transaction and encode it again and you may not get the same bytes back, and different bytes produce a different hash. cbors covers both sides of this: the annotation tree on decode, and `EncodedCbor` on encode.
 
-### Byte spans
+### Annotation tree
 
-Decoded maps, arrays, tags, byte strings, bignums and simple values remember where they came from in the original buffer. `getCborBytes` uses that to hand you the exact original bytes of any nested item. So to compute a transaction id, decode the transaction, grab the body bytes and hash them:
+`decodeAnnotated` returns a `CborNode` tree instead of a plain value. Every item, primitives included, carries its `kind`, its byte `span` in the source buffer, and head-byte `encoding` info. `node.bytes` is a zero-copy slice of the original bytes of any nested item, so to compute a transaction id you decode the transaction, walk to the body, and hash its bytes:
 
 ```js
-import { Decoder, getCborBytes } from "@stricahq/cbors";
+import { decodeAnnotated } from "@stricahq/cbors";
 
-const tx = Decoder.decode(txBytes).value;
-const bodyBytes = getCborBytes(txBytes, tx[0]);
-const txId = blake2b256(bodyBytes);
+// tx = [body, witnessSet, isValid, auxiliaryData]
+const tx = decodeAnnotated(txBytes);
+const bodyBytes = tx.at(0).bytes;
+const txId = blake2b256(bodyBytes); // any hash function
 ```
 
-These are the same bytes as in `txBytes`, so the hash matches the on-chain transaction id. Same idea for datum hashes, script integrity hashes and anything else hashed over original bytes.
+`bodyBytes` is the same stretch of bytes as in `txBytes`, so the hash matches the on-chain transaction id. The same works for datum hashes, script integrity hashes, and anything else hashed over original bytes.
 
-Values that decode to plain JS primitives (numbers, text strings, booleans, null) can't carry a span, use the `hasByteSpan` guard to check. Spans are non-enumerable, they won't show up when you iterate or serialize decoded values.
+Navigating a `CborNode`:
 
-### EncodedCbor and CIP-30
+- `node.at(k)` — array index, or the value of the first map entry whose key matches `k` (a number/bigint cross-match, a string, a bool, or a Buffer matched by content). Returns a `CborNode` or `undefined`.
+- `node.bytes` — the exact source bytes for this item, header included.
+- `node.toJS()` — the plain `decode()` value for this subtree (joins indefinite chunks, collapses bignum tags, last-wins for duplicate keys).
+- `node.items` holds array children; `node.entries` holds map entries preserving order **and** duplicate keys; `node.chunks` holds the pieces of an indefinite byte/text string.
 
-A CIP-30 wallet hands you pre-encoded CBOR, `api.signTx` returns a witness set as cbor hex. Those bytes have to go into the final transaction untouched, decoding and re-encoding the witness set can change the bytes and break the signatures. Wrap an already encoded item in `EncodedCbor` and the encoder writes it to the output as is:
+`decodeAnnotated` is one-shot only: spans are offsets into a single contiguous buffer.
+
+### EncodedCbor and byte-exact editing and CIP 30
+
+Sometimes you already hold a piece of valid CBOR as raw bytes and just need to nest it inside a larger value. Decoding it only to re-encode it can change those bytes, and different bytes mean a different hash or a broken signature. `EncodedCbor` wraps such a buffer and the encoder splices it into the output as-is instead of re-encoding it:
 
 ```js
-import { Encoder, EncodedCbor } from "@stricahq/cbors";
+import { encode, EncodedCbor } from "@stricahq/cbors";
 
 const witnessSet = Buffer.from(await api.signTx(txHex, true), "hex");
-const signedTx = Encoder.encode([
+const signedTx = encode([
   new EncodedCbor(bodyBytes),
   new EncodedCbor(witnessSet),
   true,
@@ -70,22 +89,89 @@ const signedTx = Encoder.encode([
 ]);
 ```
 
-## Streaming
-
-`Decoder` is a Node.js Transform stream. Write CBOR in whatever chunks you have and it emits `{ bytes, value }` for every complete top-level item. `bytes` is an array of buffers making up the item's original encoding, you can pass it straight to `getCborBytes`.
+The buffer can come from anywhere, a wallet or a slice of the annotation tree. Pairing `EncodedCbor` with `node.bytes` gives you byte-exact editing: decode a transaction, then rebuild it with one subtree replaced while every untouched subtree keeps its original bytes.
 
 ```js
-import { Decoder } from "@stricahq/cbors";
+import { decodeAnnotated, encode, EncodedCbor } from "@stricahq/cbors";
 
-const decoder = new Decoder();
-decoder.on("data", ({ bytes, value }) => {
-  // one event per decoded item
-});
-socket.pipe(decoder);
+const tx = decodeAnnotated(txBytes);
+const witnessSet = Buffer.from(await api.signTx(txHex, true), "hex");
+const signedTx = encode([
+  new EncodedCbor(tx.at(0).bytes),  // body — spliced byte-for-byte, its hash unchanged
+  new EncodedCbor(witnessSet),      // fresh witness set from the wallet
+  true,                             // isValid
+  null,                             // auxiliaryData
+]);
 ```
 
+## Streaming
+
+`IncrementalDecoder` is a dependency-free push decoder. Feed it CBOR a chunk at a time, and each `push` returns the top-level items that completed in that chunk as `{ value, bytes }`. Call `end()` when the input is done; it throws if the stream ended mid-item.
+
+```js
+import { IncrementalDecoder } from "@stricahq/cbors";
+
+const decoder = new IncrementalDecoder();
+socket.on("data", (chunk) => {
+  for (const { value, bytes } of decoder.push(chunk)) {
+    // one entry per completed top-level item
+  }
+});
+socket.on("end", () => decoder.end());
+```
+
+To `.pipe()` it into a Node.js stream, wrap it in a `Transform`: `push` each chunk on `transform`, and `end` on `flush`. The decoder stays dependency-free; you bring the stream glue.
+
+```js
+import { createReadStream } from "node:fs";
+import { Transform } from "node:stream";
+import { IncrementalDecoder } from "@stricahq/cbors";
+
+const decoder = new IncrementalDecoder();
+const decode = new Transform({
+  readableObjectMode: true,
+  transform(chunk, _enc, cb) {
+    try {
+      for (const item of decoder.push(chunk)) this.push(item);
+      cb();
+    } catch (err) {
+      cb(err);
+    }
+  },
+  flush(cb) {
+    try {
+      decoder.end();
+      cb();
+    } catch (err) {
+      cb(err);
+    }
+  },
+});
+
+createReadStream("stream.cbor")
+  .pipe(decode)
+  .on("data", ({ value, bytes }) => {
+    // one entry per completed top-level item
+  });
+```
+
+## Migrating from v1
+
+| v1 | v2 |
+|---|---|
+| `Encoder.encode(x)` | `encode(x)` |
+| `Decoder.decode(x).value` | `decode(x)` (returns the value directly) |
+| `getCborBytes(buf, item)` / byte spans | `decodeAnnotated(buf)` → `node.at(...).bytes` |
+| `hasByteSpan` / `Spanned` guards | annotation tree carries spans for every item |
+| `new Decoder()` Transform stream | `new IncrementalDecoder()` (`push` / `end`) |
+| BigNumber (via `bignumber.js`) | native `bigint` (BigNumber inputs now throw) |
+| `collapseBigNumber` encode option | `collapseBigInt` |
+| decimal fractions via BigNumber | `new CborTag([exponent, mantissa], 4)` |
+| CJS + ESM dual package | ESM only, `require(esm)` on Node >= 22.12 |
+
 ## API Doc
-Find the API documentation [here](https://docs.strica.io/lib/cbors)
+
+Find the API documentation [here](https://docs.strica.io/lib/cbors).
 
 # License
 Copyright 2022 Strica
