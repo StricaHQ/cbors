@@ -150,6 +150,22 @@ createReadStream("stream.cbor")
   });
 ```
 
+## Benchmarks
+
+Real Cardano CBOR data, single threaded.
+
+| Workload | Size | `decode` | `decodeAnnotated` | `encode` | `IncrementalDecoder` |
+|---|---|---|---|---|---|
+| Smallest tx | 193 B | 351 MB/s | 266 MB/s | 200 MB/s | 172 MB/s |
+| Median tx | 576 B | 521 MB/s | 411 MB/s | 287 MB/s | 303 MB/s |
+| Largest tx | 16.0 kB | 410 MB/s | 748 MB/s | 612 MB/s | 404 MB/s |
+| Full block (1 item, 15 txs) | 86.9 kB | 386 MB/s | 627 MB/s | 586 MB/s | 321 MB/s |
+| 32 random blocks (32 items, 191 txs) | 162.4 kB | 358 MB/s | 331 MB/s | 272 MB/s | 266 MB/s |
+
+A median 576 B transaction decodes in about 1.1 µs, a full 87 kB block in about 0.22 ms. `decodeAnnotated` tracks plain `decode` closely, and runs ahead of it on large map-heavy items.
+
+Measured on an Apple M1 Pro, Node 24.13.0.
+
 ## Migrating from v1
 
 | v1 | v2 |

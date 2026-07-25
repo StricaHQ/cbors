@@ -23,6 +23,21 @@ describe('encoder', (): void => {
     // beyond 2^64 falls back to bignum tags
     expect(encode(2 ** 70).toString('hex')).eq('c249400000000000000000');
     expect(encode(-(2 ** 70)).toString('hex')).eq('c3493fffffffffffffffff');
+
+    // the ±2^53 boundary, where decode switches between number and bigint
+    expect(encode(9007199254740991).toString('hex')).eq('1b001fffffffffffff');
+    expect(encode(9007199254740992).toString('hex')).eq('1b0020000000000000');
+    expect(encode(-9007199254740991).toString('hex')).eq('3b001ffffffffffffe');
+    expect(encode(-9007199254740992).toString('hex')).eq('3b001fffffffffffff');
+  });
+
+  it('Encode non-integer numbers as float64', () => {
+    expect(encode(1.5).toString('hex')).eq('fb3ff8000000000000');
+    expect(encode(1.1).toString('hex')).eq('fb3ff199999999999a');
+    expect(encode(-4.1).toString('hex')).eq('fbc010666666666666');
+    // integer-valued numbers stay integers, whatever width they arrived in
+    expect(encode(decode(hex('fa47c35000'))).toString('hex')).eq('1a000186a0');
+    expect(encode(decode(hex('f93c00'))).toString('hex')).eq('01');
   });
 
   it('Encode non-finite numbers', () => {
@@ -42,9 +57,7 @@ describe('encoder', (): void => {
     // nested inside arrays and maps
     const strAshish = new EncodedCbor(Buffer.from('66417368697368', 'hex'));
     expect(encode([1, strAshish, 2]).toString('hex')).eq('83016641736869736802');
-    expect(encode(new Map().set(1, new EncodedCbor(raw))).toString('hex')).eq(
-      'a101a201020304'
-    );
+    expect(encode(new Map().set(1, new EncodedCbor(raw))).toString('hex')).eq('a101a201020304');
 
     // preserves a non-canonical representation that re-encoding would normalize
     expect(encode(23).toString('hex')).eq('17');
@@ -60,19 +73,13 @@ describe('encoder', (): void => {
     expect(encode(BigInt(-10)).toString('hex')).eq('29');
     expect(encode(BigInt(1000000000000)).toString('hex')).eq('1b000000e8d4a51000');
     expect(encode(BigInt('18446744073709551615')).toString('hex')).eq('1bffffffffffffffff');
-    expect(encode(BigInt('-18446744073709551616')).toString('hex')).eq(
-      '3bffffffffffffffff'
-    );
+    expect(encode(BigInt('-18446744073709551616')).toString('hex')).eq('3bffffffffffffffff');
     // beyond 64-bit falls back to bignum tags
-    expect(encode(BigInt('18446744073709551616')).toString('hex')).eq(
-      'c249010000000000000000'
+    expect(encode(BigInt('18446744073709551616')).toString('hex')).eq('c249010000000000000000');
+    expect(encode(BigInt('-18446744073709551617')).toString('hex')).eq('c349010000000000000000');
+    expect(encode(BigInt('1000000000000000000000'), { collapseBigInt: false }).toString('hex')).eq(
+      'c2493635c9adc5dea00000'
     );
-    expect(encode(BigInt('-18446744073709551617')).toString('hex')).eq(
-      'c349010000000000000000'
-    );
-    expect(
-      encode(BigInt('1000000000000000000000'), { collapseBigInt: false }).toString('hex')
-    ).eq('c2493635c9adc5dea00000');
     // collapseBigInt: false forces a bignum tag even for 64-bit-representable values
     expect(encode(BigInt(10), { collapseBigInt: false }).toString('hex')).eq('c2410a');
     // round trip through the decoder's bigint representation
@@ -151,12 +158,7 @@ describe('encoder', (): void => {
 
       // reassemble with a fresh witness set, keeping body/isValid/auxData verbatim
       const newWitnessSet = new Map().set(1, 'sig');
-      const rebuilt = encode([
-        new EncodedCbor(bodyNode.bytes),
-        newWitnessSet,
-        true,
-        null,
-      ]);
+      const rebuilt = encode([new EncodedCbor(bodyNode.bytes), newWitnessSet, true, null]);
       expect(rebuilt.toString('hex')).eq('84a1001817a10163736967f5f6');
 
       // the body subtree is byte-identical to the input; a decode→re-encode of the

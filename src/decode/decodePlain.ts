@@ -4,7 +4,7 @@ import CborTag from '../values/CborTag';
 import SimpleValue from '../values/SimpleValue';
 import IndefiniteArray from '../values/IndefiniteArray';
 import IndefiniteMap from '../values/IndefiniteMap';
-import { Builder } from './parse';
+import { Builder } from './read';
 
 // builder that produces the plain decode() values (numbers, Uint8Arrays, Maps, …)
 const plainBuilder: Builder<any> = {
@@ -17,17 +17,17 @@ const plainBuilder: Builder<any> = {
   text(payload) {
     return Array.isArray(payload) ? payload.join('') : payload;
   },
-  array(items, meta) {
-    if (meta.indefinite) {
+  array(items, indefinite) {
+    if (indefinite) {
       const ary = new IndefiniteArray();
       for (const item of items) ary.push(item);
       return ary;
     }
     return items;
   },
-  map(entries, meta) {
-    const obj = meta.indefinite ? new IndefiniteMap() : new Map();
-    for (const [key, val] of entries) obj.set(key, val);
+  map(keys, values, indefinite) {
+    const obj = indefinite ? new IndefiniteMap() : new Map();
+    for (let i = 0; i < keys.length; i += 1) obj.set(keys[i], values[i]);
     return obj;
   },
   tag(tag, child) {

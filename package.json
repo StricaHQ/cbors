@@ -34,8 +34,8 @@
     "docs": "rm -rf docs && typedoc",
     "build": "rm -rf dist && tsup",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.src.json --noEmit",
-    "lint": "eslint 'src/**/*.ts'",
-    "lint:fix": "eslint --fix 'src/**/*.ts'",
+    "lint": "eslint .",
+    "lint:fix": "eslint --fix .",
     "prepack": "yarn build",
     "prepublishOnly": "yarn build && yarn test",
     "test": "vitest run"

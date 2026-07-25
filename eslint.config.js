@@ -12,11 +12,14 @@ export default tseslint.config(
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: 'module',
-      globals: globals.node,
     },
     rules: {
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
       '@typescript-eslint/no-explicit-any': 'off',
     },
+  },
+  {
+    files: ['tests/**/*.ts', '*.config.{js,ts}'],
+    languageOptions: { globals: globals.node },
   }
 );

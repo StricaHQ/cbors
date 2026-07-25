@@ -38,7 +38,11 @@ const tests: Array<TestCase> = [
   { name: 'unsigned16 1000', cbor: '1903e8', value: 1000 },
   { name: 'unsigned32 1000000', cbor: '1a000f4240', value: 1000000 },
   { name: 'unsigned64 1000000000000', cbor: '1b000000e8d4a51000', value: 1000000000000 },
-  { name: 'bigint64 18446744073709551615', cbor: '1bffffffffffffffff', value: 18446744073709551615n },
+  {
+    name: 'bigint64 18446744073709551615',
+    cbor: '1bffffffffffffffff',
+    value: 18446744073709551615n,
+  },
   { name: 'negative -1', cbor: '20', value: -1 },
   { name: 'negative -10', cbor: '29', value: -10 },
   { name: 'negative -25', cbor: '3818', value: -25 },
@@ -77,7 +81,11 @@ const tests: Array<TestCase> = [
     cbor: '981a0101010101010101010101010101010101010101010101010101',
     value: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
   },
-  { name: "Array ['a', {'b': 'c'}]", cbor: '826161a161626163', value: ['a', new Map().set('b', 'c')] },
+  {
+    name: "Array ['a', {'b': 'c'}]",
+    cbor: '826161a161626163',
+    value: ['a', new Map().set('b', 'c')],
+  },
   { name: 'IndefiniteArray []', cbor: '9fff', value: emptyIndefiniteArray },
   { name: 'IndefiniteArray [1, 2]', cbor: '9f0102ff', value: indefiniteArray },
   { name: 'Map {}', cbor: 'a0', value: new Map() },
@@ -95,6 +103,8 @@ const tests: Array<TestCase> = [
     cbor: 'c3493635c9adc5de9fffff',
     value: -1000000000000000000000n,
   },
+  { name: 'float64 1.1', cbor: 'fb3ff199999999999a', value: 1.1 },
+  { name: 'float64 -4.1', cbor: 'fbc010666666666666', value: -4.1 },
 ];
 
 describe('encode/decode round trip', (): void => {
@@ -132,6 +142,10 @@ describe('encode/decode round trip', (): void => {
     // definite forms stay definite
     expect(encode(decode(Buffer.from('820102', 'hex'))).toString('hex')).eq('820102');
     expect(encode(decode(Buffer.from('a201020304', 'hex'))).toString('hex')).eq('a201020304');
+    // and nesting in either direction is preserved
+    for (const hex of ['9f018202039f0102ffff', '829fff9fff', '81bf0102ff']) {
+      expect(encode(decode(Buffer.from(hex, 'hex'))).toString('hex')).eq(hex);
+    }
   });
 
   it('SimpleValue round trip', () => {
@@ -153,5 +167,8 @@ describe('encode/decode round trip', (): void => {
     expect(encode(new CborTag(0, 4294967296)).toString('hex')).eq('db000000010000000000');
     expect(() => encode(new CborTag(0, -1))).to.throw('Invalid tag number');
     expect(() => encode(new CborTag(0, 1.5))).to.throw('Invalid tag number');
+    // bigint tag numbers are bounded the same way
+    expect(() => encode(new CborTag(0, -1n))).to.throw('Invalid tag number');
+    expect(() => encode(new CborTag(0, 18446744073709551616n))).to.throw('Invalid tag number');
   });
 });

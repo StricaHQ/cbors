@@ -97,6 +97,38 @@ describe('decodeAnnotated', (): void => {
     const bigTag = ann('dbffffffffffffffff00');
     expect(typeof bigTag.tag).eq('bigint');
     expect(bigTag.tag).eq(18446744073709551615n);
+
+    // a bignum tag wrapping something other than a byte string is only rejected
+    // on toJS — the tree itself preserves the syntax
+    expect(ann('c200').kind).eq('tag');
+    expect(() => ann('c200').toJS()).to.throw('Invalid bignum encoding');
+  });
+
+  it('spans are relative to the input view, not the underlying ArrayBuffer', () => {
+    // the Cardano shape: one item sliced out of a larger block buffer
+    const block = new Uint8Array(hex('ffffff' + 'a26161016162820203' + 'ffff'));
+    const item = block.subarray(3, 12);
+
+    const node = decodeAnnotated(item);
+    expect(node.span).deep.eq([0, 9]);
+    expect(toHex(node.bytes)).eq('a26161016162820203');
+
+    const inner = node.at('b')!;
+    expect(inner.span).deep.eq([6, 9]);
+    expect(toHex(inner.bytes)).eq('820203');
+
+    // node.bytes is a zero-copy window onto the caller's buffer
+    expect(inner.bytes.buffer).eq(block.buffer);
+    expect(inner.bytes.byteOffset).eq(9);
+  });
+
+  it('honours decoder options', () => {
+    expect(() => decodeAnnotated(hex('818100'), { maxDepth: 1 })).to.throw(
+      'Maximum depth exceeded'
+    );
+    expect(() => decodeAnnotated(hex('4401020304'), { maxStringLength: 2 })).to.throw(
+      'exceeds maximum'
+    );
   });
 
   it('indefinite byte string: chunk nodes with their own spans', () => {
@@ -193,6 +225,11 @@ describe('decodeAnnotated', (): void => {
       expect(node.at('b')).eq(undefined);
     });
 
+    it('map float keys, and non-integer lookups miss integer keys', () => {
+      expect(ann('a1fb3ff800000000000002').at(1.5)!.toJS()).eq(2); // {1.5: 2}
+      expect(ann('a10102').at(1.5)).eq(undefined);
+    });
+
     it('duplicate keys: first match wins', () => {
       const node = ann('a201020103'); // {1: 2, 1: 3}
       expect(node.at(1)!.toJS()).eq(2);
@@ -226,6 +263,7 @@ describe('decodeAnnotated', (): void => {
       '1903e8',
       '1a000f4240',
       '1b000000e8d4a51000',
+      '1b0020000000000000',
       '1bffffffffffffffff',
       '20',
       '29',
@@ -233,17 +271,21 @@ describe('decodeAnnotated', (): void => {
       '3903e7',
       '3a000f423f',
       '3b000000e8d4a50fff',
+      '3b001fffffffffffff',
       '3bffffffffffffffff',
       '40',
       '4401020304',
       '581a010203040506070809100a0b0c0d0e0f11121314151617181920',
       '5f42010243030405ff',
+      '5fff',
       '60',
       '66417368697368',
       '7f6a496E646566696E69746566417368697368ff',
+      '7fff',
       '80',
       '981a0101010101010101010101010101010101010101010101010101',
       '826161a161626163',
+      '829fff9fff',
       '9fff',
       '9f0102ff',
       'a0',
@@ -254,12 +296,14 @@ describe('decodeAnnotated', (): void => {
       'd86682187b80',
       'c2493635c9adc5dea00000',
       'c3493635c9adc5de9fffff',
+      'c25f4101ff',
       'dbffffffffffffffff00',
       'f97e00',
       'f97c00',
       'f9fc00',
       'f98000',
       'f93c00',
+      'fa47c35000',
       'f4',
       'f5',
       'f6',

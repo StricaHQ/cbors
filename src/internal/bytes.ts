@@ -1,3 +1,8 @@
+const td = new TextDecoder('utf8', { fatal: true, ignoreBOM: true });
+
+// strict UTF-8 decode; throws on malformed input
+export const utf8Decode = (bytes: Uint8Array): string => td.decode(bytes);
+
 export const concat = (chunks: Array<Uint8Array>): Uint8Array => {
   let total = 0;
   for (const c of chunks) total += c.length;

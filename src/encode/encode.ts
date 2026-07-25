@@ -3,7 +3,6 @@ import EncodedCbor from '../values/EncodedCbor';
 import IndefiniteArray from '../values/IndefiniteArray';
 import IndefiniteMap from '../values/IndefiniteMap';
 import SimpleValue from '../values/SimpleValue';
-import { concat } from '../internal/bytes';
 import { POW_2_32, POW_2_53 } from '../internal/numbers';
 
 const NAN_BUF = Uint8Array.of(0xf9, 0x7e, 0x00);
@@ -22,39 +21,58 @@ export type EncodeOptions = {
   collapseBigInt?: boolean;
 };
 
+const INITIAL_CAPACITY = 256;
+
 export const encode = (input: any, options: EncodeOptions = {}): Uint8Array => {
   const opts = { collapseBigInt: true, ...options };
-  const outBufAry: Array<Uint8Array> = [];
 
+  // single growable output buffer: tokens are written straight into it
+  let out = new Uint8Array(INITIAL_CAPACITY);
+  let view = new DataView(out.buffer);
+  let pos = 0;
+
+  function reserve(n: number) {
+    const needed = pos + n;
+    if (needed <= out.length) return;
+    let capacity = out.length * 2;
+    while (capacity < needed) capacity *= 2;
+    const grown = new Uint8Array(capacity);
+    grown.set(out.subarray(0, pos));
+    out = grown;
+    view = new DataView(grown.buffer);
+  }
   function pushFloat64(value: number) {
-    const buf = new Uint8Array(8);
-    new DataView(buf.buffer).setFloat64(0, value);
-    outBufAry.push(buf);
+    reserve(8);
+    view.setFloat64(pos, value);
+    pos += 8;
   }
   function pushUInt8(value: number) {
-    outBufAry.push(Uint8Array.of(value & 0xff));
+    reserve(1);
+    out[pos] = value & 0xff;
+    pos += 1;
   }
   function pushBuffer(value: Uint8Array) {
-    outBufAry.push(value);
+    reserve(value.length);
+    out.set(value, pos);
+    pos += value.length;
   }
   function pushUInt16(value: number) {
-    const buf = new Uint8Array(2);
-    new DataView(buf.buffer).setUint16(0, value);
-    outBufAry.push(buf);
+    reserve(2);
+    view.setUint16(pos, value);
+    pos += 2;
   }
   function pushUInt32(value: number) {
-    const buf = new Uint8Array(4);
-    new DataView(buf.buffer).setUint32(0, value);
-    outBufAry.push(buf);
+    reserve(4);
+    view.setUint32(pos, value);
+    pos += 4;
   }
   function pushUInt64(value: number) {
     const low = value % POW_2_32;
     const high = (value - low) / POW_2_32;
-    const buf = new Uint8Array(8);
-    const dv = new DataView(buf.buffer);
-    dv.setUint32(0, high);
-    dv.setUint32(4, low);
-    outBufAry.push(buf);
+    reserve(8);
+    view.setUint32(pos, high);
+    view.setUint32(pos + 4, low);
+    pos += 8;
   }
   function pushTypeAndLength(type: number, length: number) {
     if (length < 24) {
@@ -185,8 +203,11 @@ export const encode = (input: any, options: EncodeOptions = {}): Uint8Array => {
         throw new Error(`Unsupported type for CBOR encoding: ${typeof value}`);
       }
       default: {
+        // ordered by how often each shape appears in real (Cardano) payloads:
+        // arrays, maps, byte strings and tags dominate, so they are matched first
         if (Array.isArray(value)) {
-          if (value instanceof IndefiniteArray) {
+          const indefinite = value instanceof IndefiniteArray;
+          if (indefinite) {
             pushUInt8((4 << 5) | 31);
           } else {
             pushTypeAndLength(4, value.length);
@@ -194,14 +215,33 @@ export const encode = (input: any, options: EncodeOptions = {}): Uint8Array => {
           for (const v of value) {
             encodeItem(v);
           }
-          if (value instanceof IndefiniteArray) {
+          if (indefinite) {
             pushBuffer(BREAK);
           }
-        } else if (value instanceof EncodedCbor) {
-          pushBuffer(value.cborBytes);
+        } else if (value instanceof Map) {
+          // also covers IndefiniteMap (a Map subclass); iterate with forEach so no
+          // per-entry [key, value] tuple is materialised
+          const indefinite = value instanceof IndefiniteMap;
+          if (indefinite) {
+            pushUInt8((5 << 5) | 31);
+          } else {
+            pushTypeAndLength(5, value.size);
+          }
+          value.forEach((v, key) => {
+            encodeItem(key);
+            encodeItem(v);
+          });
+          if (indefinite) {
+            pushBuffer(BREAK);
+          }
         } else if (value instanceof Uint8Array) {
           pushTypeAndLength(2, value.length);
           pushBuffer(value);
+        } else if (value instanceof CborTag) {
+          pushTagNumber(value.tag);
+          encodeItem(value.value);
+        } else if (value instanceof EncodedCbor) {
+          pushBuffer(value.cborBytes);
         } else if (value instanceof ArrayBuffer) {
           const buf = new Uint8Array(value);
           pushTypeAndLength(2, buf.length);
@@ -210,9 +250,6 @@ export const encode = (input: any, options: EncodeOptions = {}): Uint8Array => {
           const buf = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
           pushTypeAndLength(2, buf.length);
           pushBuffer(buf);
-        } else if (value instanceof CborTag) {
-          pushTagNumber(value.tag);
-          encodeItem(value.value);
         } else if (value instanceof SimpleValue) {
           // simple values 24-31 are reserved/not encodable in one-byte form
           if (
@@ -230,42 +267,36 @@ export const encode = (input: any, options: EncodeOptions = {}): Uint8Array => {
           throw new Error(
             'Unsupported type for CBOR encoding: BigNumber (convert to a bigint, or use CborTag for decimal fractions)'
           );
-        } else if (
-          // these have no own enumerable properties (or index-only ones), so the
-          // map fallback below would silently corrupt them into (empty) maps
-          value instanceof Date ||
-          value instanceof Set ||
-          value instanceof WeakMap ||
-          value instanceof WeakSet ||
-          value instanceof RegExp ||
-          value instanceof Error ||
-          value instanceof Promise ||
-          value instanceof Number ||
-          value instanceof String ||
-          value instanceof Boolean ||
-          ArrayBuffer.isView(value) // typed arrays other than Uint8Array, DataView
-        ) {
-          throw new Error(
-            `Unsupported type for CBOR encoding: ${Object.prototype.toString.call(value)}`
-          );
         } else {
-          let entries;
-          if (value instanceof Map) {
-            entries = [...value.entries()];
-          } else {
-            entries = [...Object.entries(value)];
+          const proto = Object.getPrototypeOf(value);
+          // a plain object or null-prototype dict encodes straight to a map; any
+          // other prototype is first checked against the shapes whose (empty or
+          // index-only) enumerable surface the map fallback would silently corrupt
+          if (proto !== Object.prototype && proto !== null) {
+            if (
+              value instanceof Date ||
+              value instanceof Set ||
+              value instanceof WeakMap ||
+              value instanceof WeakSet ||
+              value instanceof RegExp ||
+              value instanceof Error ||
+              value instanceof Promise ||
+              value instanceof Number ||
+              value instanceof String ||
+              value instanceof Boolean ||
+              ArrayBuffer.isView(value) // typed arrays other than Uint8Array, DataView
+            ) {
+              throw new Error(
+                `Unsupported type for CBOR encoding: ${Object.prototype.toString.call(value)}`
+              );
+            }
           }
-          if (value instanceof IndefiniteMap) {
-            pushUInt8((5 << 5) | 31);
-          } else {
-            pushTypeAndLength(5, entries.length);
-          }
-          for (const [key, v] of entries) {
+          const keys = Object.keys(value);
+          pushTypeAndLength(5, keys.length);
+          for (let i = 0; i < keys.length; i += 1) {
+            const key = keys[i];
             encodeItem(key);
-            encodeItem(v);
-          }
-          if (value instanceof IndefiniteMap) {
-            pushBuffer(BREAK);
+            encodeItem(value[key]);
           }
         }
       }
@@ -273,5 +304,5 @@ export const encode = (input: any, options: EncodeOptions = {}): Uint8Array => {
   }
 
   encodeItem(input);
-  return concat(outBufAry);
+  return out.slice(0, pos);
 };

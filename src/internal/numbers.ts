@@ -1,6 +1,6 @@
 const MAX_SAFE_HIGH = 0x1fffff;
-export const SHIFT32 = 0x100000000;
-export const POW_2_24 = 5.960464477539063e-8;
+const SHIFT32 = 0x100000000;
+const POW_2_24 = 5.960464477539063e-8;
 export const POW_2_32 = 4294967296;
 export const POW_2_53 = 9007199254740992;
 
@@ -22,12 +22,18 @@ export const getBigNum = (f: number, g: number): number | bigint => {
   return f * SHIFT32 + g;
 };
 
-// big-endian readers over exact-width byte slices
-export const readUInt8 = (b: Uint8Array): number => b[0];
-export const readUInt16BE = (b: Uint8Array): number => (b[0] << 8) | b[1];
-export const readUInt32BE = (b: Uint8Array): number =>
-  ((b[0] << 24) | (b[1] << 16) | (b[2] << 8) | b[3]) >>> 0;
-export const readFloat32BE = (b: Uint8Array): number =>
-  new DataView(b.buffer, b.byteOffset, b.byteLength).getFloat32(0);
-export const readFloat64BE = (b: Uint8Array): number =>
-  new DataView(b.buffer, b.byteOffset, b.byteLength).getFloat64(0);
+const f16Scratch = new DataView(new ArrayBuffer(4));
+
+// expand a raw 16-bit half-float to a JS number
+export const readFloat16 = (value: number): number => {
+  const sign = value & 0x8000;
+  let exponent = value & 0x7c00;
+  const fraction = value & 0x03ff;
+
+  if (exponent === 0x7c00) exponent = 0xff << 10;
+  else if (exponent !== 0) exponent += (127 - 15) << 10;
+  else if (fraction !== 0) return (sign ? -1 : 1) * fraction * POW_2_24;
+
+  f16Scratch.setUint32(0, ((sign << 16) | (exponent << 13) | (fraction << 13)) >>> 0);
+  return f16Scratch.getFloat32(0);
+};

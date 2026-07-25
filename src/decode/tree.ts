@@ -1,5 +1,4 @@
-import BufferList from '../internal/BufferList';
-import Parser, { Builder, DecoderOptions, Meta } from './parse';
+import Reader, { Builder, DecoderOptions } from './read';
 import { bytesToBigInt } from '../internal/numbers';
 import { bytesEqual, concat } from '../internal/bytes';
 import CborTag from '../values/CborTag';
@@ -21,10 +20,6 @@ export type CborNodeKind =
   | 'bool'
   | 'null'
   | 'undefined';
-
-// each node holds a reference to the source buffer off the enumerable surface,
-// so nodes stay clean for inspection/comparison while bytes stays zero-copy
-const SOURCES = new WeakMap<CborNode, Uint8Array>();
 
 // does the map key node match lookup key k? int keys cross-match number/bigint;
 // byte-string keys match by content.
@@ -74,17 +69,29 @@ export class CborNode {
 
   child?: CborNode; // tag payload
 
+  // the source buffer, held in a private field so it stays off the enumerable
+  // surface: nodes remain clean for inspection/comparison while bytes stays
+  // zero-copy
+  #source: Uint8Array;
+
   /** @hidden — nodes come from decodeAnnotated(), not direct construction */
-  constructor(source: Uint8Array, kind: CborNodeKind, meta: Meta) {
+  constructor(
+    source: Uint8Array,
+    kind: CborNodeKind,
+    start: number,
+    end: number,
+    ai: number,
+    indefinite: boolean
+  ) {
     this.kind = kind;
-    this.span = meta.span;
-    this.encoding = { ai: meta.ai, indefinite: meta.indefinite };
-    SOURCES.set(this, source);
+    this.span = [start, end];
+    this.encoding = { ai, indefinite };
+    this.#source = source;
   }
 
   // zero-copy subarray of the source buffer, header included
   get bytes(): Uint8Array {
-    return SOURCES.get(this)!.subarray(this.span[0], this.span[1]);
+    return this.#source.subarray(this.span[0], this.span[1]);
   }
 
   // plain-decode value: joins indefinite chunks, collapses bignum tags, applies
@@ -149,75 +156,101 @@ export class CborNode {
 }
 
 // builds a CborNode tree, anchoring every node to the one source buffer
-const treeBuilder = (source: Uint8Array): Builder<CborNode> => ({
-  int(value, meta) {
-    const node = new CborNode(source, value < 0 ? 'nint' : 'uint', meta);
+class TreeBuilder implements Builder<CborNode> {
+  #source: Uint8Array;
+
+  constructor(source: Uint8Array) {
+    this.#source = source;
+  }
+
+  int(value: number | bigint, ai: number, start: number, end: number): CborNode {
+    const node = new CborNode(this.#source, value < 0 ? 'nint' : 'uint', start, end, ai, false);
     node.value = value;
     return node;
-  },
-  bytes(payload, meta) {
-    const node = new CborNode(source, 'bytes', meta);
+  }
+
+  bytes(
+    payload: Uint8Array | CborNode[],
+    indefinite: boolean,
+    ai: number,
+    start: number,
+    end: number
+  ): CborNode {
+    const node = new CborNode(this.#source, 'bytes', start, end, ai, indefinite);
     if (Array.isArray(payload)) node.chunks = payload;
     else node.value = payload;
     return node;
-  },
-  text(payload, meta) {
-    const node = new CborNode(source, 'text', meta);
+  }
+
+  text(
+    payload: string | CborNode[],
+    indefinite: boolean,
+    ai: number,
+    start: number,
+    end: number
+  ): CborNode {
+    const node = new CborNode(this.#source, 'text', start, end, ai, indefinite);
     if (Array.isArray(payload)) node.chunks = payload;
     else node.value = payload;
     return node;
-  },
-  array(items, meta) {
-    const node = new CborNode(source, 'array', meta);
+  }
+
+  array(items: CborNode[], indefinite: boolean, ai: number, start: number, end: number): CborNode {
+    const node = new CborNode(this.#source, 'array', start, end, ai, indefinite);
     node.items = items;
     return node;
-  },
-  map(entries, meta) {
-    const node = new CborNode(source, 'map', meta);
-    node.entries = entries.map(([key, value]) => ({ key, value }));
+  }
+
+  map(
+    keys: CborNode[],
+    values: CborNode[],
+    indefinite: boolean,
+    ai: number,
+    start: number,
+    end: number
+  ): CborNode {
+    const node = new CborNode(this.#source, 'map', start, end, ai, indefinite);
+    const entries = new Array<{ key: CborNode; value: CborNode }>(keys.length);
+    for (let i = 0; i < keys.length; i += 1) entries[i] = { key: keys[i], value: values[i] };
+    node.entries = entries;
     return node;
-  },
-  tag(tag, child, meta) {
-    const node = new CborNode(source, 'tag', meta);
+  }
+
+  tag(tag: number | bigint, child: CborNode, ai: number, start: number, end: number): CborNode {
+    const node = new CborNode(this.#source, 'tag', start, end, ai, false);
     node.tag = tag;
     node.child = child;
     return node;
-  },
-  float(value, meta) {
-    const node = new CborNode(source, 'float', meta);
+  }
+
+  float(value: number, ai: number, start: number, end: number): CborNode {
+    const node = new CborNode(this.#source, 'float', start, end, ai, false);
     node.value = value;
     return node;
-  },
-  simple(value, meta) {
+  }
+
+  simple(value: number, ai: number, start: number, end: number): CborNode {
     if (value === 20 || value === 21) {
-      const node = new CborNode(source, 'bool', meta);
+      const node = new CborNode(this.#source, 'bool', start, end, ai, false);
       node.value = value === 21;
       return node;
     }
-    if (value === 22) return new CborNode(source, 'null', meta);
-    if (value === 23) return new CborNode(source, 'undefined', meta);
-    const node = new CborNode(source, 'simple', meta);
+    if (value === 22) return new CborNode(this.#source, 'null', start, end, ai, false);
+    if (value === 23) return new CborNode(this.#source, 'undefined', start, end, ai, false);
+    const node = new CborNode(this.#source, 'simple', start, end, ai, false);
     node.value = value;
     return node;
-  },
-});
+  }
+}
 
 // decode a single CBOR item into an annotation tree. One-shot only: spans are
 // offsets into this one contiguous buffer.
 export const decodeAnnotated = (inputBytes: Uint8Array, options?: DecoderOptions): CborNode => {
-  const parser = new Parser(treeBuilder(inputBytes), options);
-  const bs = new BufferList();
-  bs.push(inputBytes);
-  const gen = parser.parse();
-  let state = gen.next();
+  const reader = new Reader(inputBytes, new TreeBuilder(inputBytes), options);
+  const node = reader.read();
 
-  while (!state.done) {
-    const b = bs.read(state.value);
-    state = gen.next(b);
-  }
-
-  if (bs.length > 0) {
+  if (reader.pos < inputBytes.length) {
     throw new Error('Remaining Bytes');
   }
-  return state.value;
+  return node;
 };
