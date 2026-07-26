@@ -183,7 +183,7 @@ const inputs = body.at(0);      // body key 0 is the inputs
 const inputItems = inputs.kind === "tag" ? inputs.child.items : inputs.items;
 ```
 
-`decodeAnnotated` is one-shot: spans are offsets into a single contiguous buffer.
+`decodeAnnotated` is one-shot: spans are offsets into a single contiguous buffer. For a stream, `IncrementalDecoder.annotated()` gives you the same tree per item as they complete.
 
 ### Splicing pre-encoded bytes with EncodedCbor
 
@@ -270,6 +270,17 @@ socket.on("data", (chunk) => {
 socket.on("end", () => decoder.end());
 ```
 
+`IncrementalDecoder.annotated()` decodes the same stream into [annotation trees](#the-annotation-tree): `value` is a `CborNode` instead of a plain value, so a streamed block or transaction still knows the bytes of every item inside it. Each item is framed into its own buffer, spans are offsets into that item, not into the stream.
+
+```js
+const decoder = IncrementalDecoder.annotated();
+socket.on("data", (chunk) => {
+  for (const { value } of decoder.push(chunk)) {
+    const txId = blake2b256(value.at(0).bytes);
+  }
+});
+```
+
 To `.pipe()` it into a Node.js stream, wrap it in a `Transform`: `push` each chunk on `transform`, and `end` on `flush`. The decoder stays dependency-free; you bring the stream glue.
 
 ```js
@@ -309,7 +320,7 @@ createReadStream("stream.cbor")
 
 Options are plain objects and always optional.
 
-`decode(bytes, options)`, `decodeAnnotated(bytes, options)` and `new IncrementalDecoder(options)` take the same decoder options:
+`decode(bytes, options)`, `decodeAnnotated(bytes, options)`, `new IncrementalDecoder(options)` and `IncrementalDecoder.annotated(options)` take the same decoder options:
 
 | Option | Default | What it does |
 |---|---|---|
@@ -353,7 +364,6 @@ Real Cardano CBOR data, single threaded.
 | Median tx | 576 B | 521 MB/s | 411 MB/s | 287 MB/s | 303 MB/s |
 | Largest tx | 16.0 kB | 410 MB/s | 748 MB/s | 612 MB/s | 404 MB/s |
 | Full block (1 item, 15 txs) | 86.9 kB | 386 MB/s | 627 MB/s | 586 MB/s | 321 MB/s |
-| 32 random blocks (32 items, 191 txs) | 162.4 kB | 358 MB/s | 331 MB/s | 272 MB/s | 266 MB/s |
 
 A median 576 B transaction decodes in about 1.1 µs, a full 87 kB block in about 0.22 ms. `decodeAnnotated` tracks plain `decode` closely, and runs ahead of it on large map-heavy items.
 

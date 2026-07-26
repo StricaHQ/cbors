@@ -1,6 +1,7 @@
-import Reader, { DecoderOptions } from './read';
+import Reader, { Builder, DecoderOptions } from './read';
 import Scanner, { NEED_MORE } from './scan';
 import plainBuilder from './decodePlain';
+import { CborNode, TreeBuilder } from './tree';
 
 const INITIAL_CAPACITY = 1024;
 
@@ -10,8 +11,11 @@ const INITIAL_CAPACITY = 1024;
 // Chunks are accumulated into one contiguous buffer. A resumable Scanner frames
 // each top-level item, then Reader parses the framed slice — so the stream is
 // walked once
-export default class IncrementalDecoder {
+export default class IncrementalDecoder<V = any> {
   #options: DecoderOptions;
+
+  // a builder per item: the annotation tree anchors its nodes to the item's bytes
+  #builder: (bytes: Uint8Array) => Builder<V> = () => plainBuilder;
 
   #buf: Uint8Array = new Uint8Array(INITIAL_CAPACITY);
 
@@ -26,16 +30,25 @@ export default class IncrementalDecoder {
     this.#scanner = new Scanner(0, options);
   }
 
-  push(chunk: Uint8Array): Array<{ value: any; bytes: Uint8Array }> {
+  // same stream, but each item completes as a CborNode tree instead of a plain
+  // value. Every item is framed into its own buffer, the spans of its nodes
+  // are offsets into that item's bytes, not into the stream.
+  static annotated(options: DecoderOptions = {}): IncrementalDecoder<CborNode> {
+    const decoder = new IncrementalDecoder<CborNode>(options);
+    decoder.#builder = (bytes) => new TreeBuilder(bytes);
+    return decoder;
+  }
+
+  push(chunk: Uint8Array): Array<{ value: V; bytes: Uint8Array }> {
     this.append(chunk);
-    const completed: Array<{ value: any; bytes: Uint8Array }> = [];
+    const completed: Array<{ value: V; bytes: Uint8Array }> = [];
 
     for (;;) {
       const itemEnd = this.#scanner.scan(this.#buf, this.#end);
       if (itemEnd === NEED_MORE) break;
 
       const bytes = this.#buf.slice(this.#start, itemEnd);
-      const reader = new Reader(bytes, plainBuilder, this.#options);
+      const reader = new Reader(bytes, this.#builder(bytes), this.#options);
       const value = reader.read();
       if (reader.pos !== bytes.length) {
         throw new Error('Invalid CBOR encoding');

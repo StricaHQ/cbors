@@ -156,7 +156,7 @@ export class CborNode {
 }
 
 // builds a CborNode tree, anchoring every node to the one source buffer
-class TreeBuilder implements Builder<CborNode> {
+export class TreeBuilder implements Builder<CborNode> {
   #source: Uint8Array;
 
   constructor(source: Uint8Array) {

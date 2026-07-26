@@ -1,15 +1,18 @@
 import { describe, it, expect } from 'vitest';
 import {
   IncrementalDecoder,
+  CborNode,
   CborTag,
   IndefiniteArray,
   IndefiniteMap,
   SimpleValue,
   decode,
+  decodeAnnotated,
   encode,
 } from '../src/index';
 
 const hex = (h: string) => new Uint8Array(Buffer.from(h, 'hex'));
+const toHex = (u: Uint8Array): string => Buffer.from(u).toString('hex');
 
 // one item of every shape the framing pass has to step over
 const corpus = (): Uint8Array[] => {
@@ -160,5 +163,68 @@ describe('IncrementalDecoder', (): void => {
     // major type 2, length 4, but only one payload byte follows
     expect(decoder.push(Buffer.from('4401', 'hex'))).to.have.length(0);
     expect(() => decoder.end()).to.throw('unexpected end of input');
+  });
+});
+
+describe('IncrementalDecoder.annotated', (): void => {
+  it('Emits the tree decodeAnnotated builds, at any chunk size', () => {
+    const items = corpus();
+    const stream = Buffer.concat(items.map((i) => Buffer.from(i)));
+
+    for (const size of [1, 2, 3, 7, 64, 1024, 65536]) {
+      const decoder = IncrementalDecoder.annotated();
+      const got: Array<{ value: CborNode; bytes: Uint8Array }> = [];
+      for (let off = 0; off < stream.length; off += size) {
+        got.push(...decoder.push(new Uint8Array(stream.subarray(off, off + size))));
+      }
+      decoder.end();
+
+      expect(got.length, `chunk size ${size}`).eq(items.length);
+      got.forEach((item, i) => {
+        expect(item.value, `chunk ${size} item ${i}`).deep.eq(decodeAnnotated(items[i]));
+        expect(toHex(item.value.bytes), `chunk ${size} item ${i}`).eq(toHex(items[i]));
+      });
+    }
+  });
+
+  it('Spans are offsets into the item, not into the stream', () => {
+    const decoder = IncrementalDecoder.annotated();
+    const [first, second] = decoder.push(hex('43010203' + '820102'));
+
+    expect(first.value.span).deep.eq([0, 4]);
+    expect(second.value.span).deep.eq([0, 3]);
+    expect(second.value.items!.map((i) => i.span)).deep.eq([
+      [1, 2],
+      [2, 3],
+    ]);
+  });
+
+  it('Anchors node.bytes to the item, so a later push cannot move them', () => {
+    const decoder = IncrementalDecoder.annotated();
+    const [{ value }] = decoder.push(hex('82430102034401020304'));
+    const item = value.items![1];
+    expect(toHex(item.bytes)).eq('4401020304');
+
+    decoder.push(hex('4405060708'));
+    expect(toHex(item.bytes)).eq('4401020304');
+  });
+
+  it('Applies decoder options', () => {
+    const nested = (depth: number) =>
+      Buffer.concat([Buffer.alloc(depth, 0x81), Buffer.from([0x00])]);
+    expect(() => IncrementalDecoder.annotated({ maxDepth: 3 }).push(nested(5))).to.throw(
+      'Maximum depth exceeded'
+    );
+    expect(IncrementalDecoder.annotated({ maxDepth: 3 }).push(nested(3))).to.have.length(1);
+  });
+
+  it('Applies the full grammar to framed items', () => {
+    for (const h of ['5f6161ff', '5f5f4101ffff', 'f800', '7f61c361bcff']) {
+      expect(() => IncrementalDecoder.annotated().push(hex(h)), h).to.throw();
+    }
+    // the tree keeps tag 2/3 uncollapsed, so a malformed bignum only fails on toJS()
+    const [{ value }] = IncrementalDecoder.annotated().push(hex('c200'));
+    expect(value.kind).eq('tag');
+    expect(() => value.toJS()).to.throw('Invalid bignum encoding');
   });
 });
