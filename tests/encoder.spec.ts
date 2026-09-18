@@ -1,4 +1,5 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+import { runInNewContext } from 'node:vm';
 import * as _ from 'lodash';
 import { CborTag, decode, decodeAnnotated, encode as baseEncode, EncodedCbor } from '../src/index';
 
@@ -68,6 +69,35 @@ describe('encoder', (): void => {
     expect(deepEql(decoded[0], new Map().set(1, 2).set(3, 4))).eq(true);
   });
 
+  it('EncodedCbor only takes a non-empty Uint8Array', () => {
+    // a hex string used to be spliced one character per byte (00 01 00 02), and
+    // an empty buffer left the array below one item short (81)
+    expect(() => new EncodedCbor('0102' as any)).to.throw(
+      TypeError,
+      'EncodedCbor expects a Uint8Array, got string'
+    );
+    expect(() => encode([new EncodedCbor(new Uint8Array(0))])).to.throw(
+      RangeError,
+      'EncodedCbor expects one encoded CBOR item, got no bytes'
+    );
+    for (const [type, input] of [
+      ['Array', [0x01, 0x02]],
+      ['ArrayBuffer', new ArrayBuffer(2)],
+      ['Uint16Array', new Uint16Array(1)],
+      ['Object', { cborBytes: Uint8Array.of(0x01) }],
+      ['undefined', undefined],
+    ] as Array<[string, any]>) {
+      expect(() => new EncodedCbor(input), type).to.throw(TypeError, `got ${type}`);
+    }
+
+    // any Uint8Array is fine, and cborBytes hands back exactly what was given
+    const buf = Buffer.from('0a', 'hex');
+    expect(new EncodedCbor(buf).cborBytes).eq(buf);
+    expect(encode([new EncodedCbor(buf)]).toString('hex')).eq('810a');
+    const otherRealm = runInNewContext('Uint8Array.of(0x0b)');
+    expect(encode(new EncodedCbor(otherRealm)).toString('hex')).eq('0b');
+  });
+
   it('Encode bigint', () => {
     expect(encode(BigInt(10)).toString('hex')).eq('0a');
     expect(encode(BigInt(-10)).toString('hex')).eq('29');
@@ -82,9 +112,28 @@ describe('encoder', (): void => {
     );
     // collapseBigInt: false forces a bignum tag even for 64-bit-representable values
     expect(encode(BigInt(10), { collapseBigInt: false }).toString('hex')).eq('c2410a');
+    // undefined and null keep the default, as with the decoder options
+    expect(encode(BigInt(10), { collapseBigInt: undefined }).toString('hex')).eq('0a');
+    expect(encode(BigInt(10), null as any).toString('hex')).eq('0a');
     // round trip through the decoder's bigint representation
     const decoded = decode(encode(BigInt('18446744073709551616'))) as bigint;
     expect(decoded.toString()).eq('18446744073709551616');
+  });
+
+  it('Encode bignums of any length', () => {
+    expect(encode(0n, { collapseBigInt: false }).toString('hex')).eq('c24100');
+    expect(encode(-1n, { collapseBigInt: false }).toString('hex')).eq('c34100');
+    // a magnitude with an odd number of hex digits and every digit value
+    expect(encode(0x0123456789abcdef0123456789abcdefn).toString('hex')).eq(
+      'c2500123456789abcdef0123456789abcdef'
+    );
+    // 256 KiB magnitudes, which took seconds each while bytes were shifted out one by one
+    const n = 256 * 1024;
+    const value = 1n << BigInt(8 * (n - 1));
+    const expected = Buffer.concat([hex('c25a00040000'), Buffer.from([1]), Buffer.alloc(n - 1)]);
+    expect(encode(value).equals(expected)).eq(true);
+    expected[0] = 0xc3;
+    expect(encode(-value - 1n).equals(expected)).eq(true);
   });
 
   it('Encode throws for unsupported types instead of corrupting', () => {
@@ -111,6 +160,77 @@ describe('encoder', (): void => {
     expect(encode({ a: 1 }).toString('hex')).eq('a1616101');
     expect(encode(new Uint8Array([1])).toString('hex')).eq('4101');
     expect(encode(new Uint8ClampedArray([1])).toString('hex')).eq('4101');
+  });
+
+  it('Encode throws for objects that are not plain, instead of mapping their fields', () => {
+    class Point {
+      x = 1;
+    }
+    expect(() => encode(new Point())).to.throw(
+      'Unsupported type for CBOR encoding: Point instance, only plain objects encode as maps'
+    );
+    expect(() => encode(Object.create({ inherited: 1 }))).to.throw('Unsupported type');
+    expect(() => encode(new SharedArrayBuffer(1))).to.throw('Unsupported type');
+    // a tree node points at the way to splice its bytes
+    expect(() => encode([decodeAnnotated(hex('1817'))])).to.throw('new EncodedCbor(node.bytes)');
+    // a prototype-less object is still plain
+    expect(encode(Object.assign(Object.create(null), { a: 1 })).toString('hex')).eq('a1616101');
+  });
+
+  it('Encode takes the value classes of another copy of cbors', async () => {
+    vi.resetModules();
+    const other = await import('../src/index');
+    expect(other.CborTag).not.eq(CborTag);
+
+    expect(encode(new other.CborTag([1, 2], 258)).toString('hex')).eq('d90102820102');
+    expect(encode(new other.EncodedCbor(hex('1817'))).toString('hex')).eq('1817');
+    expect(encode(new other.SimpleValue(99)).toString('hex')).eq('f863');
+    const array = new other.IndefiniteArray();
+    array.push(1);
+    expect(encode(array).toString('hex')).eq('9f01ff');
+    expect(encode(new other.IndefiniteMap().set(1, 2)).toString('hex')).eq('bf0102ff');
+
+    // either copy re-encodes what the other decoded, byte for byte
+    const bytes = 'd9010284c60a9f01ffbf0102fff863';
+    expect(encode(other.decode(hex(bytes))).toString('hex')).eq(bytes);
+    expect(toHex(other.encode(decode(hex(bytes))))).eq(bytes);
+
+    // the brand stays off the instances
+    const tag = new CborTag(1, 2);
+    expect(Object.keys(tag)).deep.eq(['value', 'tag']);
+    expect(Object.getOwnPropertySymbols(tag)).deep.eq([]);
+    expect(JSON.stringify(tag)).eq('{"value":1,"tag":2}');
+  });
+
+  it('Encode takes builtins from another realm', () => {
+    const [map, object, bytes, clamped, buffer, array] = runInNewContext(
+      '[new Map([[1, 2]]), { a: 1 }, Uint8Array.of(3), Uint8ClampedArray.of(4), Uint8Array.of(5).buffer, [6]]'
+    );
+    expect(encode(map).toString('hex')).eq('a10102');
+    expect(encode(object).toString('hex')).eq('a1616101');
+    expect(encode(bytes).toString('hex')).eq('4103');
+    expect(encode(clamped).toString('hex')).eq('4104');
+    expect(encode(buffer).toString('hex')).eq('4105');
+    expect(encode(array).toString('hex')).eq('8106');
+    // a Map subclass carrying the IndefiniteMap brand, from another realm
+    const indefinite = runInNewContext(`
+      class IndefiniteMap extends Map {}
+      Object.defineProperty(IndefiniteMap.prototype, Symbol.for('@stricahq/cbors'), { value: 'IndefiniteMap' });
+      new IndefiniteMap([[1, 2]]);
+    `);
+    expect(encode(indefinite).toString('hex')).eq('bf0102ff');
+
+    for (const source of [
+      'new Date()',
+      'new Set([1])',
+      'new WeakMap()',
+      'Float32Array.of(1)',
+      'new DataView(new ArrayBuffer(1))',
+      'new Error("x")',
+      'new (class Point {})()',
+    ]) {
+      expect(() => encode(runInNewContext(source)), source).to.throw('Unsupported type');
+    }
   });
 
   describe('byte-exact editing via EncodedCbor(node.bytes)', () => {

@@ -1,7 +1,8 @@
-import Reader, { Builder, DecoderOptions } from './read';
+import Reader, { Builder, DecoderOptions, ResolvedOptions, resolveOptions } from './read';
 import Scanner, { NEED_MORE } from './scan';
 import plainBuilder from './decodePlain';
 import { CborNode, TreeBuilder } from './tree';
+import { asBytes } from '../internal/bytes';
 
 const INITIAL_CAPACITY = 1024;
 
@@ -12,7 +13,7 @@ const INITIAL_CAPACITY = 1024;
 // each top-level item, then Reader parses the framed slice — so the stream is
 // walked once
 export default class IncrementalDecoder<V = any> {
-  #options: DecoderOptions;
+  #options: ResolvedOptions;
 
   // a builder per item: the annotation tree anchors its nodes to the item's bytes
   #builder: (bytes: Uint8Array) => Builder<V> = () => plainBuilder;
@@ -25,9 +26,12 @@ export default class IncrementalDecoder<V = any> {
 
   #scanner: Scanner;
 
+  // set once the stream has failed, holding what to throw from then on
+  #failure: { error: unknown } | undefined;
+
   constructor(options: DecoderOptions = {}) {
-    this.#options = options;
-    this.#scanner = new Scanner(0, options);
+    this.#options = resolveOptions(options);
+    this.#scanner = new Scanner(0, this.#options);
   }
 
   // same stream, but each item completes as a CborNode tree instead of a plain
@@ -40,23 +44,31 @@ export default class IncrementalDecoder<V = any> {
   }
 
   push(chunk: Uint8Array): Array<{ value: V; bytes: Uint8Array }> {
-    this.append(chunk);
+    if (this.#failure) throw this.#failure.error;
+    // a refused chunk is the caller's mistake, not the stream's
+    this.append(asBytes(chunk, 'IncrementalDecoder.push()'));
     const completed: Array<{ value: V; bytes: Uint8Array }> = [];
 
-    for (;;) {
-      const itemEnd = this.#scanner.scan(this.#buf, this.#end);
-      if (itemEnd === NEED_MORE) break;
+    try {
+      for (;;) {
+        const itemEnd = this.#scanner.scan(this.#buf, this.#end);
+        if (itemEnd === NEED_MORE) break;
 
-      const bytes = this.#buf.slice(this.#start, itemEnd);
-      const reader = new Reader(bytes, this.#builder(bytes), this.#options);
-      const value = reader.read();
-      if (reader.pos !== bytes.length) {
-        throw new Error('Invalid CBOR encoding');
+        const bytes = this.#buf.slice(this.#start, itemEnd);
+        const reader = new Reader(bytes, this.#builder(bytes), this.#options);
+        const value = reader.read();
+        if (reader.pos !== bytes.length) {
+          throw new Error('Invalid CBOR encoding');
+        }
+
+        completed.push({ value, bytes });
+        this.#start = itemEnd;
+        this.#scanner.restart(itemEnd);
       }
-
-      completed.push({ value, bytes });
-      this.#start = itemEnd;
-      this.#scanner.restart(itemEnd);
+    } catch (error) {
+      this.fail(error);
+      if (completed.length === 0) throw error;
+      return completed;
     }
 
     this.compact();
@@ -64,9 +76,17 @@ export default class IncrementalDecoder<V = any> {
   }
 
   end(): void {
+    if (this.#failure) throw this.#failure.error;
     if (this.#end > this.#start) {
       throw new Error('unexpected end of input');
     }
+  }
+
+  private fail(error: unknown): void {
+    this.#failure = { error };
+    this.#buf = new Uint8Array(0);
+    this.#start = 0;
+    this.#end = 0;
   }
 
   private append(chunk: Uint8Array): void {

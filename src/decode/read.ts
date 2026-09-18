@@ -1,5 +1,6 @@
 import { getBigNum, readFloat16 } from '../internal/numbers';
 import { utf8Decode } from '../internal/bytes';
+import { RECURSION_LIMIT } from '../internal/limits';
 
 // a single byte string can never exceed 2^32 - 1 bytes, so any string/bytes item
 // declaring a larger length can never be decoded
@@ -11,6 +12,34 @@ export type DecoderOptions = {
   maxStringLength?: number;
   // reject items nested deeper than this
   maxDepth?: number;
+};
+
+// DecoderOptions after validation, with the defaults filled in
+export type ResolvedOptions = {
+  maxStringLength: number;
+  maxDepth: number;
+};
+
+const checkLimit = (name: string, value: unknown, fallback: number): number => {
+  if (value === undefined || value === null) return fallback;
+  if (typeof value !== 'number') {
+    throw new TypeError(`Invalid ${name}: expected a number, got ${typeof value}`);
+  }
+  if (!(value >= 0 && (Number.isInteger(value) || value === Infinity))) {
+    throw new RangeError(`Invalid ${name}: expected a non-negative integer, got ${value}`);
+  }
+  return value;
+};
+
+export const resolveOptions = (options?: DecoderOptions): ResolvedOptions => {
+  const { maxStringLength, maxDepth } = options ?? {};
+  return {
+    maxStringLength: Math.min(
+      checkLimit('maxStringLength', maxStringLength, MAX_POSSIBLE_STRING_LENGTH),
+      MAX_POSSIBLE_STRING_LENGTH
+    ),
+    maxDepth: checkLimit('maxDepth', maxDepth, DEFAULT_MAX_DEPTH),
+  };
 };
 
 // the parse core constructs values only through a Builder: one recursive-descent
@@ -29,6 +58,21 @@ export interface Builder<V> {
   simple(value: number, ai: number, start: number, end: number): V;
 }
 
+// an array, map or tag open on Reader's explicit stack
+type Frame<V> = {
+  majorType: number;
+  ai: number;
+  start: number;
+  // items still to come (a map counts keys and values), -1 while indefinite
+  remaining: number;
+  // array items, map keys, or the tag's child
+  items: V[];
+  values: V[];
+  tag: number | bigint;
+};
+
+const NO_VALUES: never[] = [];
+
 // recursive-descent reader over one contiguous buffer, driving every decode
 // entry point through the Builder protocol. The whole input is in hand, so it
 // reads fields straight out of the buffer.
@@ -40,21 +84,28 @@ export default class Reader<V> {
 
   private view: DataView;
 
+  private memory: ArrayBufferLike;
+
+  private offset: number;
+
   private builder: Builder<V>;
 
   private maxStringLength: number;
 
   private maxDepth: number;
 
-  constructor(buf: Uint8Array, builder: Builder<V>, options: DecoderOptions = {}) {
+  constructor(buf: Uint8Array, builder: Builder<V>, options: ResolvedOptions) {
     this.buf = buf;
-    this.view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+    this.memory = buf.buffer;
+    this.offset = buf.byteOffset;
+    this.view = new DataView(this.memory, this.offset, buf.byteLength);
     this.builder = builder;
-    this.maxStringLength = Math.min(
-      options.maxStringLength ?? MAX_POSSIBLE_STRING_LENGTH,
-      MAX_POSSIBLE_STRING_LENGTH
-    );
-    this.maxDepth = options.maxDepth ?? DEFAULT_MAX_DEPTH;
+    this.maxStringLength = options.maxStringLength;
+    this.maxDepth = options.maxDepth;
+  }
+
+  private bytesAt(at: number, n: number): Uint8Array {
+    return new Uint8Array(this.memory, this.offset + at, n);
   }
 
   // claim n bytes and return the offset they start at
@@ -128,6 +179,12 @@ export default class Reader<V> {
     if (depth > this.maxDepth) {
       throw new Error('Maximum depth exceeded');
     }
+    // past RECURSION_LIMIT a container goes to readDeep; any other item does
+    // not recurse, so it is read here at any depth
+    if (depth > RECURSION_LIMIT) {
+      const majorType = this.buf[this.pos] >> 5;
+      if (majorType >= 4 && majorType <= 6) return this.readDeep(depth);
+    }
 
     const start = this.pos;
     const head = this.buf[this.take(1)];
@@ -181,7 +238,7 @@ export default class Reader<V> {
             const at = this.take(chunkHead.length);
             chunks.push(
               this.builder.bytes(
-                this.buf.subarray(at, at + chunkHead.length),
+                this.bytesAt(at, chunkHead.length),
                 false,
                 chunkHead.ai,
                 chunkStart,
@@ -193,7 +250,7 @@ export default class Reader<V> {
         }
         const len = this.checkStringLength(length);
         const at = this.take(len);
-        return this.builder.bytes(this.buf.subarray(at, at + len), false, ai, start, this.pos);
+        return this.builder.bytes(this.bytesAt(at, len), false, ai, start, this.pos);
       }
       case 3: {
         if (indefinite) {
@@ -206,7 +263,7 @@ export default class Reader<V> {
             // RFC 8949: each indefinite text chunk must be valid UTF-8 on its own
             chunks.push(
               this.builder.text(
-                utf8Decode(this.buf.subarray(at, at + chunkHead.length)),
+                utf8Decode(this.bytesAt(at, chunkHead.length)),
                 false,
                 chunkHead.ai,
                 chunkStart,
@@ -218,13 +275,7 @@ export default class Reader<V> {
         }
         const len = this.checkStringLength(length);
         const at = this.take(len);
-        return this.builder.text(
-          utf8Decode(this.buf.subarray(at, at + len)),
-          false,
-          ai,
-          start,
-          this.pos
-        );
+        return this.builder.text(utf8Decode(this.bytesAt(at, len)), false, ai, start, this.pos);
       }
       case 4: {
         // a definite element count beyond 2^53 can never be satisfied
@@ -273,5 +324,99 @@ export default class Reader<V> {
       default:
         throw new Error('Invalid CBOR encoding');
     }
+  }
+
+  // read() for a container at the given depth, holding the open containers
+  // under it on a heap stack. Checks run in the same order as in read().
+  private readDeep(depth: number): V {
+    const { buf, builder } = this;
+    const stack: Frame<V>[] = [];
+
+    for (;;) {
+      const top = stack.length > 0 ? stack[stack.length - 1] : undefined;
+      let value: V;
+
+      if (
+        top !== undefined &&
+        top.remaining < 0 &&
+        // an indefinite map only closes where a key would start
+        (top.majorType !== 5 || top.items.length === top.values.length) &&
+        this.atBreak()
+      ) {
+        stack.pop();
+        value = this.close(top);
+      } else {
+        const itemDepth = depth + stack.length;
+        const majorType = buf[this.pos] >> 5;
+        if (majorType < 4 || majorType > 6) {
+          value = this.read(itemDepth);
+        } else {
+          if (itemDepth > this.maxDepth) {
+            throw new Error('Maximum depth exceeded');
+          }
+          const start = this.pos;
+          const ai = buf[this.take(1)] & 0x1f;
+          const length = this.readLength(ai);
+          if (majorType === 6) {
+            if (length === -1) throw new Error('Invalid length');
+            stack.push({
+              majorType,
+              ai,
+              start,
+              remaining: 1,
+              items: [],
+              values: NO_VALUES,
+              tag: length,
+            });
+            continue;
+          }
+          if (typeof length === 'bigint') {
+            throw new Error(majorType === 4 ? 'Invalid array length' : 'Invalid map length');
+          }
+          if (length !== 0) {
+            stack.push({
+              majorType,
+              ai,
+              start,
+              remaining: length < 0 ? -1 : majorType === 5 ? length * 2 : length,
+              items: [],
+              values: majorType === 5 ? [] : NO_VALUES,
+              tag: 0,
+            });
+            continue;
+          }
+          value =
+            majorType === 4
+              ? builder.array([], false, ai, start, this.pos)
+              : builder.map([], [], false, ai, start, this.pos);
+        }
+      }
+
+      // hand the item to its container, closing every container it completes
+      for (;;) {
+        const parent = stack.length > 0 ? stack[stack.length - 1] : undefined;
+        if (parent === undefined) return value;
+        if (parent.majorType === 5 && parent.items.length > parent.values.length) {
+          parent.values.push(value);
+        } else {
+          parent.items.push(value);
+        }
+        if (parent.remaining < 0) break;
+        parent.remaining -= 1;
+        if (parent.remaining > 0) break;
+        stack.pop();
+        value = this.close(parent);
+      }
+    }
+  }
+
+  private close(frame: Frame<V>): V {
+    const { majorType, ai, start, items } = frame;
+    const indefinite = frame.remaining < 0;
+    if (majorType === 4) return this.builder.array(items, indefinite, ai, start, this.pos);
+    if (majorType === 5) {
+      return this.builder.map(items, frame.values, indefinite, ai, start, this.pos);
+    }
+    return this.builder.tag(frame.tag, items[0], ai, start, this.pos);
   }
 }

@@ -1,9 +1,17 @@
 import { getBigNum } from '../internal/numbers';
-import { DecoderOptions, DEFAULT_MAX_DEPTH, MAX_POSSIBLE_STRING_LENGTH } from './read';
+import { ResolvedOptions } from './read';
 
-// stack entry for an indefinite-length container: it ends at a break marker
-// rather than after a known number of items
-const INDEFINITE = -1;
+// stack entries for indefinite-length items (any negative count): they end at a
+// break marker rather than after a known number of items. A map tracks whether
+// a key or a value comes next, since a break in place of a value is malformed.
+// Indefinite strings get their own markers, because their chunks are not nested
+// items: they do not count towards depth, and each must be a definite string of
+// the same major type.
+const INDEFINITE_ARRAY = -1;
+const INDEFINITE_MAP_KEY = -2;
+const INDEFINITE_MAP_VALUE = -3;
+const INDEFINITE_BYTES = -4;
+const INDEFINITE_TEXT = -5;
 
 export const NEED_MORE = -1;
 
@@ -19,25 +27,24 @@ export default class Scanner {
   // absolute offset of the next byte to look at
   pos: number;
 
-  // remaining item counts for open containers, innermost last
-  #stack: number[] = [];
+  // remaining item counts for open containers, innermost last. The bottom entry
+  // stands for the top level, so the stack is never empty and the current depth
+  // is its length minus one.
+  #stack: number[] = [0];
 
   #maxStringLength: number;
 
   #maxDepth: number;
 
-  constructor(start: number, options: DecoderOptions = {}) {
+  constructor(start: number, options: ResolvedOptions) {
     this.pos = start;
-    this.#maxStringLength = Math.min(
-      options.maxStringLength ?? MAX_POSSIBLE_STRING_LENGTH,
-      MAX_POSSIBLE_STRING_LENGTH
-    );
-    this.#maxDepth = options.maxDepth ?? DEFAULT_MAX_DEPTH;
+    this.#maxStringLength = options.maxStringLength;
+    this.#maxDepth = options.maxDepth;
   }
 
   restart(at: number): void {
     this.pos = at;
-    this.#stack.length = 0;
+    this.#stack.length = 1;
   }
 
   shift(by: number): void {
@@ -56,12 +63,17 @@ export default class Scanner {
   private settle(): boolean {
     const stack = this.#stack;
     for (;;) {
-      const depth = stack.length;
+      const depth = stack.length - 1;
       if (depth === 0) return true;
-      const remaining = stack[depth - 1];
-      if (remaining === INDEFINITE) return false; // waits for its break marker
+      const remaining = stack[depth];
+      if (remaining < 0) {
+        // indefinite: waits for its break marker
+        if (remaining === INDEFINITE_MAP_KEY) stack[depth] = INDEFINITE_MAP_VALUE;
+        else if (remaining === INDEFINITE_MAP_VALUE) stack[depth] = INDEFINITE_MAP_KEY;
+        return false;
+      }
       if (remaining > 1) {
-        stack[depth - 1] = remaining - 1;
+        stack[depth] = remaining - 1;
         return false;
       }
       stack.pop(); // that was the container's last item; it completes too
@@ -71,29 +83,54 @@ export default class Scanner {
   // end offset of the completed top-level item, or NEED_MORE. pos only advances
   // over bytes that are fully buffered, so a suspended scan resumes in place.
   scan(buf: Uint8Array, end: number): number {
+    const stack = this.#stack;
     for (;;) {
-      // mirrors Reader's depth check: an item sits at depth = open container count
-      if (this.#stack.length > this.#maxDepth) {
+      const depth = stack.length - 1;
+      // remaining count of the innermost open item, 0 at the top level
+      const top = stack[depth];
+      // mirrors Reader, which checks an item's depth (= open container count)
+      // before reading its head
+      const tooDeep = depth > this.#maxDepth;
+
+      // the next byte of a definite container can only be an item, so the depth
+      // check does not wait for it
+      if (tooDeep && top >= 0) {
         throw new Error('Maximum depth exceeded');
       }
       if (this.pos >= end) return NEED_MORE;
 
       const head = buf[this.pos];
-
-      if (head === 0xff) {
-        const depth = this.#stack.length;
-        if (depth === 0 || this.#stack[depth - 1] !== INDEFINITE) {
-          throw new Error('Invalid length');
-        }
-        this.#stack.pop();
-        this.pos += 1;
-        if (this.settle()) return this.pos;
-        continue;
-      }
-
       const majorType = head >> 5;
       const ai = head & 0x1f;
       const indefinite = ai === 31;
+
+      if (top < 0) {
+        if (head === 0xff) {
+          // closes the indefinite item, unless that is a map still owed a value
+          if (top === INDEFINITE_MAP_VALUE) {
+            throw new Error('Invalid length');
+          }
+          stack.pop();
+          this.pos += 1;
+          if (this.settle()) return this.pos;
+          continue;
+        }
+        if (top === INDEFINITE_BYTES || top === INDEFINITE_TEXT) {
+          // RFC 8949 3.2.3: a chunk is a definite string of the enclosing major
+          // type. Reserved ai 28-30 is left to the length check below, which
+          // Reader applies first too. A chunk is not a nested item, so it gets
+          // no depth check of its own.
+          const expected = top === INDEFINITE_BYTES ? 2 : 3;
+          if (indefinite || (ai < 28 && majorType !== expected)) {
+            throw new Error('Invalid indefinite length encoding');
+          }
+        } else if (tooDeep) {
+          // an item rather than the break marker, so the depth check applies
+          throw new Error('Maximum depth exceeded');
+        }
+      } else if (head === 0xff) {
+        throw new Error('Invalid length');
+      }
 
       let headLen = 1;
       if (ai >= 24) {
@@ -129,7 +166,7 @@ export default class Scanner {
         case 4:
         case 5: {
           if (indefinite) {
-            this.push(INDEFINITE);
+            this.push(majorType === 4 ? INDEFINITE_ARRAY : INDEFINITE_MAP_KEY);
             break;
           }
           if (typeof length === 'bigint') {
@@ -149,7 +186,7 @@ export default class Scanner {
         case 2:
         case 3:
           if (indefinite) {
-            this.push(INDEFINITE);
+            this.push(majorType === 2 ? INDEFINITE_BYTES : INDEFINITE_TEXT);
             break;
           }
           if (this.settle()) return this.pos;

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { decode, SimpleValue } from '../src/index';
+import { decode, decodeAnnotated, IncrementalDecoder, SimpleValue } from '../src/index';
 
 describe('decoder', (): void => {
   it('Decode negative and special float16', () => {
@@ -26,6 +26,23 @@ describe('decoder', (): void => {
     expect(decode(Buffer.from('3b001ffffffffffffe', 'hex'))).eq(-9007199254740991);
     expect(decode(Buffer.from('1b0020000000000000', 'hex'))).eq(9007199254740992n);
     expect(decode(Buffer.from('3b001fffffffffffff', 'hex'))).eq(-9007199254740992n);
+  });
+
+  it('Decode bignums of any length', () => {
+    expect(decode(Buffer.from('c240', 'hex'))).eq(0n);
+    expect(decode(Buffer.from('c340', 'hex'))).eq(-1n);
+    expect(decode(Buffer.from('c2430000ff', 'hex'))).eq(255n);
+    expect(decode(Buffer.from('c250000102030405060708090a0b0c0d0e0f', 'hex'))).eq(
+      0x0102030405060708090a0b0c0d0e0fn
+    );
+
+    const n = 256 * 1024;
+    const head = Buffer.from('5a00040000', 'hex');
+    const one = Buffer.alloc(n);
+    one[0] = 1;
+    const ones = Buffer.alloc(n, 0xff);
+    expect(decode(Buffer.concat([Buffer.of(0xc2), head, one]))).eq(1n << BigInt(8 * (n - 1)));
+    expect(decode(Buffer.concat([Buffer.of(0xc3), head, ones]))).eq(-(1n << BigInt(8 * n)));
   });
 
   it('Decode float32 and float64 payloads', () => {
@@ -113,6 +130,45 @@ describe('decoder', (): void => {
     expect(decode(nested(1000))).to.be.an('array');
     expect(() => decode(nested(5), { maxDepth: 3 })).to.throw('Maximum depth exceeded');
     expect(decode(nested(3), { maxDepth: 3 })).to.be.an('array');
+    // Infinity turns the depth limit off; the string length keeps its ceiling
+    expect(decode(nested(2000), { maxDepth: Infinity })).to.be.an('array');
+    expect(() =>
+      decode(Buffer.from('5bffffffffffffffff', 'hex'), { maxStringLength: Infinity })
+    ).to.throw('exceeds maximum');
+  });
+
+  describe('Decoder options are validated by every entry point', () => {
+    const entryPoints: Array<[string, (options: any) => unknown]> = [
+      ['decode', (options) => decode(Buffer.from('00', 'hex'), options)],
+      ['decodeAnnotated', (options) => decodeAnnotated(Buffer.from('00', 'hex'), options)],
+      ['new IncrementalDecoder', (options) => new IncrementalDecoder(options)],
+      ['IncrementalDecoder.annotated', (options) => IncrementalDecoder.annotated(options)],
+    ];
+    for (const [name, run] of entryPoints) {
+      it(name, () => {
+        for (const option of ['maxDepth', 'maxStringLength']) {
+          // NaN compares false against every value, so it would turn the limit off
+          for (const bad of [NaN, -1, 1.5, -Infinity]) {
+            expect(() => run({ [option]: bad }), `${option}: ${bad}`).to.throw(
+              RangeError,
+              `Invalid ${option}: expected a non-negative integer, got ${bad}`
+            );
+          }
+          for (const bad of ['5', 5n, {}, true]) {
+            expect(() => run({ [option]: bad }), `${option}: ${typeof bad}`).to.throw(
+              TypeError,
+              `Invalid ${option}: expected a number, got ${typeof bad}`
+            );
+          }
+          // undefined and null keep the default
+          for (const good of [0, 7, Infinity, undefined, null]) {
+            expect(() => run({ [option]: good }), `${option}: ${good}`).not.to.throw();
+          }
+        }
+        expect(() => run(undefined)).not.to.throw();
+        expect(() => run(null)).not.to.throw();
+      });
+    }
   });
 
   it('Truncated input throws Insufficient data', () => {

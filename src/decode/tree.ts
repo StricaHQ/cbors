@@ -1,6 +1,7 @@
-import Reader, { Builder, DecoderOptions } from './read';
+import Reader, { Builder, DecoderOptions, resolveOptions } from './read';
 import { bytesToBigInt } from '../internal/numbers';
-import { bytesEqual, concat } from '../internal/bytes';
+import { asBytes, bytesEqual, concat, plainView } from '../internal/bytes';
+import { RECURSION_LIMIT } from '../internal/limits';
 import CborTag from '../values/CborTag';
 import SimpleValue from '../values/SimpleValue';
 import IndefiniteArray from '../values/IndefiniteArray';
@@ -97,50 +98,7 @@ export class CborNode {
   // plain-decode value: joins indefinite chunks, collapses bignum tags, applies
   // last-wins for duplicate map keys — deep-equals decode(this.bytes)
   toJS(): any {
-    switch (this.kind) {
-      case 'uint':
-      case 'nint':
-      case 'float':
-      case 'bool':
-        return this.value;
-      case 'null':
-        return null;
-      case 'undefined':
-        return undefined;
-      case 'simple':
-        return new SimpleValue(this.value as number);
-      case 'bytes':
-        return this.chunks
-          ? concat(this.chunks.map((c) => c.value as Uint8Array))
-          : (this.value as Uint8Array);
-      case 'text':
-        return this.chunks
-          ? this.chunks.map((c) => c.value as string).join('')
-          : (this.value as string);
-      case 'array': {
-        const ary = this.encoding.indefinite ? new IndefiniteArray() : [];
-        for (const item of this.items!) ary.push(item.toJS());
-        return ary;
-      }
-      case 'map': {
-        const obj = this.encoding.indefinite ? new IndefiniteMap() : new Map();
-        for (const { key, value } of this.entries!) obj.set(key.toJS(), value.toJS());
-        return obj;
-      }
-      case 'tag': {
-        const child = this.child!.toJS();
-        if (this.tag === 2 || this.tag === 3) {
-          if (!(child instanceof Uint8Array)) {
-            throw new Error('Invalid bignum encoding: expected byte string');
-          }
-          const big = bytesToBigInt(child);
-          return this.tag === 3 ? -1n - big : big;
-        }
-        return new CborTag(child, this.tag!);
-      }
-      default:
-        throw new Error(`Invalid CborNode kind: ${this.kind}`);
-    }
+    return nodeToJS(this, 0);
   }
 
   // array: item at index. map: value of the first entry whose key matches.
@@ -154,6 +112,121 @@ export class CborNode {
     return undefined;
   }
 }
+
+const isContainer = (node: CborNode): boolean =>
+  node.kind === 'array' || node.kind === 'map' || node.kind === 'tag';
+
+// an array or map node's plain value, before its items are added (toJSDeep only:
+// nodeToJS builds its own, which keeps each of its call sites monomorphic)
+const emptyJS = (node: CborNode): any => {
+  if (node.kind === 'array') return node.encoding.indefinite ? new IndefiniteArray() : [];
+  return node.encoding.indefinite ? new IndefiniteMap() : new Map();
+};
+
+const tagToJS = (node: CborNode, child: any): any => {
+  if (node.tag === 2 || node.tag === 3) {
+    if (!(child instanceof Uint8Array)) {
+      throw new Error('Invalid bignum encoding: expected byte string');
+    }
+    const big = bytesToBigInt(child);
+    return node.tag === 3 ? -1n - big : big;
+  }
+  return new CborTag(child, node.tag!);
+};
+
+const nodeToJS = (node: CborNode, depth: number): any => {
+  switch (node.kind) {
+    case 'uint':
+    case 'nint':
+    case 'float':
+    case 'bool':
+      return node.value;
+    case 'null':
+      return null;
+    case 'undefined':
+      return undefined;
+    case 'simple':
+      return new SimpleValue(node.value as number);
+    case 'bytes':
+      return node.chunks
+        ? concat(node.chunks.map((c) => c.value as Uint8Array))
+        : (node.value as Uint8Array);
+    case 'text':
+      return node.chunks
+        ? node.chunks.map((c) => c.value as string).join('')
+        : (node.value as string);
+    case 'array': {
+      if (depth > RECURSION_LIMIT) return toJSDeep(node);
+      const ary = node.encoding.indefinite ? new IndefiniteArray() : [];
+      for (const item of node.items!) ary.push(nodeToJS(item, depth + 1));
+      return ary;
+    }
+    case 'map': {
+      if (depth > RECURSION_LIMIT) return toJSDeep(node);
+      const obj = node.encoding.indefinite ? new IndefiniteMap() : new Map();
+      for (const { key, value } of node.entries!) {
+        obj.set(nodeToJS(key, depth + 1), nodeToJS(value, depth + 1));
+      }
+      return obj;
+    }
+    case 'tag':
+      if (depth > RECURSION_LIMIT) return toJSDeep(node);
+      return tagToJS(node, nodeToJS(node.child!, depth + 1));
+    default:
+      throw new Error(`Invalid CborNode kind: ${node.kind}`);
+  }
+};
+
+// a container's i-th child in walk order, where each map entry is its key then its value
+const childAt = (node: CborNode, i: number): CborNode | undefined => {
+  if (node.kind === 'array') return node.items![i];
+  if (node.kind === 'map') {
+    const entry = node.entries![i >> 1];
+    return entry && (i & 1 ? entry.value : entry.key);
+  }
+  return i === 0 ? node.child : undefined;
+};
+
+// toJS() for a container, holding the open containers under it on a heap stack
+const toJSDeep = (root: CborNode): any => {
+  // pending: a map key waiting for its value, or a tag's child value
+  const stack: Array<{ node: CborNode; out: any; next: number; pending: any }> = [];
+  let node = root;
+  for (;;) {
+    let value: any;
+    if (isContainer(node)) {
+      const out = node.kind === 'tag' ? undefined : emptyJS(node);
+      const first = childAt(node, 0);
+      if (first !== undefined) {
+        stack.push({ node, out, next: 0, pending: undefined });
+        node = first;
+        continue;
+      }
+      value = out;
+    } else {
+      value = nodeToJS(node, 0);
+    }
+
+    // hand the value to its container, then move to the container's next
+    // child, closing every container that has none left
+    for (;;) {
+      const top = stack.length > 0 ? stack[stack.length - 1] : undefined;
+      if (top === undefined) return value;
+      const parent = top.node;
+      if (parent.kind === 'array') top.out.push(value);
+      else if (parent.kind === 'map' && top.next % 2 === 1) top.out.set(top.pending, value);
+      else top.pending = value;
+      top.next += 1;
+      const next = childAt(parent, top.next);
+      if (next !== undefined) {
+        node = next;
+        break;
+      }
+      stack.pop();
+      value = parent.kind === 'tag' ? tagToJS(parent, top.pending) : top.out;
+    }
+  }
+};
 
 // builds a CborNode tree, anchoring every node to the one source buffer
 export class TreeBuilder implements Builder<CborNode> {
@@ -246,10 +319,11 @@ export class TreeBuilder implements Builder<CborNode> {
 // decode a single CBOR item into an annotation tree. One-shot only: spans are
 // offsets into this one contiguous buffer.
 export const decodeAnnotated = (inputBytes: Uint8Array, options?: DecoderOptions): CborNode => {
-  const reader = new Reader(inputBytes, new TreeBuilder(inputBytes), options);
+  const bytes = plainView(asBytes(inputBytes, 'decodeAnnotated()'));
+  const reader = new Reader(bytes, new TreeBuilder(bytes), resolveOptions(options));
   const node = reader.read();
 
-  if (reader.pos < inputBytes.length) {
+  if (reader.pos < bytes.length) {
     throw new Error('Remaining Bytes');
   }
   return node;

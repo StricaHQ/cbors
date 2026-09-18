@@ -123,7 +123,7 @@ encode(value);
 | `CborTag` | tagged item |
 | `SimpleValue` | simple value |
 | `EncodedCbor` | its bytes, spliced in untouched |
-| `Date`, `Set`, `RegExp`, other typed arrays, functions, symbols | throws |
+| any other object (a class instance, `Date`, `Set`, `RegExp`, other typed arrays), functions, symbols | throws |
 
 Anything the encoder cannot represent faithfully throws rather than being silently mangled into a map of its fields. Note that an integral `number` always encodes as an integer, so `1.0` goes out as `01`, and floats are never shrunk to half or single precision. If you need a specific float encoding on the wire, splice it in with `EncodedCbor`.
 
@@ -324,12 +324,14 @@ Options are plain objects and always optional.
 
 | Option | Default | What it does |
 |---|---|---|
-| `maxDepth` | `1024` | Rejects items nested deeper than this. Deep nesting is what a hostile input uses to blow the stack. |
+| `maxDepth` | `1024` | Rejects items nested deeper than this. cbors itself handles any depth without running out of stack (`decode`, `toJS()` and `encode` alike), so the limit is there for code that walks decoded values recursively. |
 | `maxStringLength` | `4294967295` | Rejects a byte or text string, or an indefinite chunk, that declares a length above this. Stops a two-byte header from asking for a gigabyte allocation. This is also the ceiling: a larger value is clamped to it. |
 
 ```js
 decode(bytes, { maxDepth: 32, maxStringLength: 1 << 20 });
 ```
+
+Both limits take a non-negative integer. `Infinity` turns `maxDepth` off, and leaves `maxStringLength` at its ceiling.
 
 `encode(value, options)`:
 
@@ -360,12 +362,12 @@ Real Cardano CBOR data, single threaded.
 
 | Workload | Size | `decode` | `decodeAnnotated` | `encode` | `IncrementalDecoder` |
 |---|---|---|---|---|---|
-| Smallest tx | 193 B | 351 MB/s | 266 MB/s | 200 MB/s | 172 MB/s |
-| Median tx | 576 B | 521 MB/s | 411 MB/s | 287 MB/s | 303 MB/s |
-| Largest tx | 16.0 kB | 410 MB/s | 748 MB/s | 612 MB/s | 404 MB/s |
-| Full block (1 item, 15 txs) | 86.9 kB | 386 MB/s | 627 MB/s | 586 MB/s | 321 MB/s |
+| Smallest tx | 193 B | 351 MB/s | 274 MB/s | 246 MB/s | 159 MB/s |
+| Median tx | 576 B | 558 MB/s | 439 MB/s | 314 MB/s | 312 MB/s |
+| Largest tx | 16.0 kB | 452 MB/s | 867 MB/s | 696 MB/s | 433 MB/s |
+| Full block (1 item, 15 txs) | 86.9 kB | 419 MB/s | 699 MB/s | 679 MB/s | 334 MB/s |
 
-A median 576 B transaction decodes in about 1.1 µs, a full 87 kB block in about 0.22 ms. `decodeAnnotated` tracks plain `decode` closely, and runs ahead of it on large map-heavy items.
+A median 576 B transaction decodes in about 1.0 µs, a full 87 kB block in about 0.20 ms. `decodeAnnotated` tracks plain `decode` closely, and runs ahead of it on large map-heavy items.
 
 Measured on an Apple M1 Pro, Node 24.13.0.
 
